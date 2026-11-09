@@ -1,7 +1,7 @@
 [project]
 name = "kraft-sdlc"
 dynamic = ["version"]
-description = "A local orchestrator that takes your coding agent from spec to pull request, stopping only when a decision is yours."
+description = "A local orchestrator that takes your coding agent from spec to merge request, stopping only when a decision is yours."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -91,6 +91,7 @@ dev = [
     # hour of counting progress characters to find one nested test run.
     "pytest-timeout>=2.3",
     "jsonschema>=4",  # test-only: validates the exported config schemas
+    "vale==3.26.0.1",  # the docs style check: .vale.ini, `just vale`
 ]
 
 [project.scripts]
