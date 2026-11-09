@@ -1,6 +1,7 @@
 import { EllipsisVertical, MessageSquare } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useStore } from "../../../store";
 import { DOLLARS_HINT, dollars, dollarsText, elapsedBetween, plural, shortId } from "../../../format";
 import type { KraftEvent, WorkerSession } from "../../../types";
 import { hintText } from "../../item/cause";
@@ -65,7 +66,8 @@ export function ItemScreen({ item, events, reload, now }: { item: ItemDetail; ev
   const { lines, subagents } = useLog(item.id, session && !ended ? session.id : null, live);
   const running = (subagents ?? []).filter((a) => a.status === "running");
   // Nothing to compare before a start, or once the worktree is gone (archived: R12b-11); the server answers 409 or 404.
-  const compare = useCompare(item.id, "base", "latest", false, item.head_sha, neverStarted(item) || item.worktree_exists === false);
+  // A joined slice's commits are read on its parent's branch, so a slice still asks.
+  const compare = useCompare(item.id, "base", "latest", false, item.head_sha, neverStarted(item) || (item.worktree_exists === false && !item.parent_id));
   const files = compare.state === "ready" ? (compare.data.files ?? []) : [];
   const card = cardOf(item, events, files.length);
   const adds = files.reduce((n, f) => n + f.insertions, 0);
@@ -122,10 +124,12 @@ export function ItemScreen({ item, events, reload, now }: { item: ItemDetail; ev
       </Button>
     );
 
+  const parent = useStore((st) => (item.parent_id ? st.workItems[item.parent_id] : undefined));
   return (
     <>
       <ScreenHeader
-        id={item.bead_id || shortId(item.id)}
+        // A slice names its parent first, a link back to it.
+        id={item.parent_id ? <><Link className="ph-header-parent" to={`/work-items/${encodeURIComponent(item.parent_id)}`}>{parent?.bead_id || shortId(item.parent_id)}</Link><span aria-hidden> › </span>{item.bead_id || shortId(item.id)}</> : item.bead_id || shortId(item.id)}
         trailing={<button type="button" className="ph-icon-btn" {...tip("More actions")} onClick={() => sheet.open("kebab")}><EllipsisVertical size={18} aria-hidden="true" /></button>}
       />
       <div className="ph-content">

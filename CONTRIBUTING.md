@@ -63,7 +63,7 @@ just dev        # backend + vite, state in .dev/, agents faked, UI on :5173
 and [impeccable](https://impeccable.style) for every agent this repo is worked
 on with, and for Claude Code also
 [ponytail](https://github.com/DietrichGebert/ponytail),
-[techdocs-authoring](https://github.com/pkloehn1/techdocs-authoring), and the
+[techdocs-authoring](https://github.com/pkloehn1/techdocs-authoring) and the
 engineering and design plugins from
 [knowledge-work-plugins](https://github.com/anthropics/knowledge-work-plugins).
 It is opt-in, and `just setup` never runs it, so a contributor's agents get
@@ -72,7 +72,7 @@ installed, and a missing tool or a failed download is a warning, not a failed
 setup. To refresh them, run `claude plugin update <id>` and `npx skills update -p`:
 
 - **Claude Code**, when `claude` is on your `PATH`: as plugins.
-  `.claude/settings.json` turns them on, but Claude Code does not download a
+  `.claude/settings.json` turns them on, but Claude Code doesn't download a
   plugin from an outside source for you, so each clone installs them once.
 - **Codex, Cursor, Gemini CLI, OpenCode, Amp, Antigravity and GitHub Copilot**,
   when `npx` is on your `PATH`: as skills in `.agents/skills/`, the folder all
@@ -87,13 +87,13 @@ worktree. Claude Code's plugins live in `~/.claude` and need no setup per
 worktree.
 
 superpowers is off in Kraft workers: its skills ask a person questions and push
-or merge a finished branch, and a worker does neither. So is ponytail, which
-puts a session into its own coding mode where a worker follows Kraft's
+or merge a finished branch, and a worker does neither. ponytail is off
+too: it puts a session into its own coding mode where a worker follows Kraft's
 instructions. For Claude Code, `.claude/hooks/kraft-worker-plugins.sh` refuses
 every superpowers and ponytail skill in a session with `$KRAFT_WORK_ITEM_ID` set
-and tells the session and its subagents so.
+and tells the session and its sub-agents so.
 
-The worker hook cannot stop another plugin's own hooks. ponytail's still brief
+The worker hook can't stop another plugin's own hooks. ponytail's still brief
 each worker in its mode, and techdocs-authoring's turns back a worker's first
 commit once, with a checklist for its message. Both plugins read an off switch
 from the environment, so add them to `env:` in this repo's `repos.yaml` entry:
@@ -139,7 +139,7 @@ claude plugin install design --marketplace anthropics/knowledge-work-plugins
 
 `just dev` puts `fixtures/bin` on `PATH` ahead of the real agent, where `claude`
 is a symlink to `fixtures/fake-claude.sh` — the same fake the test suite uses, so
-it cannot rot. A dev instance never spends tokens and never touches `~/.kraft`.
+it can't rot. A dev instance never spends tokens and never touches `~/.kraft`.
 
 Run `just` for the full list of recipes.
 
@@ -164,7 +164,7 @@ rebuild the extension first.
 ### Pre-commit hooks
 
 `.pre-commit-config.yaml` runs ruff, whitespace, YAML and file-size checks,
-and two local hooks. In a fresh clone, `uv run pre-commit install` sets them
+and three local hooks. In a fresh clone, `uv run pre-commit install` sets them
 up. In a checkout that uses beads, `bd hooks install` writes its hooks to the
 git directory (`.git/hooks/`, shared by every linked worktree); there, append
 this below beads' block in `.git/hooks/pre-commit` instead:
@@ -176,7 +176,7 @@ fi
 ```
 
 Keep `core.hooksPath` unset, or pointing outside the working tree:
-`git config --get core.hooksPath` prints nothing. Do not run
+`git config --get core.hooksPath` prints nothing. Don't run
 `bd hooks install --beads` or `--shared`: they point it at `.beads/hooks/` or
 `.beads-hooks/`, files a branch can change, so checking out someone else's
 branch would run its hooks as you. `.beads/hooks/` is gitignored for the same
@@ -185,8 +185,10 @@ reason.
 Either way, `uv run pre-commit run --all-files` runs them by hand. CI is the
 real gate; the hooks only catch things sooner.
 
-The two local hooks need `just` on `PATH`:
+The three local hooks need `just` on `PATH`:
 
+- `vale` runs `just vale` when a Markdown file changes, and fails the commit
+  on any alert. See [Voice and spelling](#voice-and-spelling).
 - `config-schemas-current` runs `just schemas` when `src/kraft/` or
   `vscode/schemas/` changes, and fails the commit if that rewrote a schema.
   Stage the regenerated files and commit again.
@@ -216,10 +218,10 @@ starter issues by area and size. Issues labelled
 [`good first issue`](https://github.com/itsOmidKarami/kraft/labels/good%20first%20issue)
 are small and self-contained. For anything bigger than a bug fix, open an issue
 first and say what you plan to do, so nobody spends a week on a change that
-does not fit.
+doesn't fit.
 
 Comments, commit messages and the changelog cite IDs like `Kraft-y0g2`. They
-point into the maintainer's private issue tracker (beads), which you cannot
+point into the maintainer's private issue tracker (beads), which you can't
 see. Read one as "this was discussed"; the text beside it says what matters.
 Don't add new ones: cite a GitHub issue or pull request number instead.
 
@@ -263,9 +265,9 @@ and `.kraft/collection.json` lists them. An installed instance sees an update
 only when an add-on's `version` changes, so a change to an add-on under
 `addons/` raises that add-on's `version` in the same pull request: patch for a fix, minor for something new, major for a
 removed or renamed chain or task. When the change uses something the last
-release cannot read, raise `requires.kraft` too.
+release can't read, raise `requires.kraft` too.
 `dev/check_addon_versions.py` (in `just ci-checks` and CI's lint job) fails when
-an add-on changed against the pull request's base and its version is not
+an add-on changed against the pull request's base and its version isn't
 higher. Two pull requests that raise one add-on to the same version both pass
 alone, and the second fails on `main`: merge `main` into the second and raise
 it again before merging it.
@@ -304,7 +306,7 @@ just lint       # ruff check + format check
 just fix        # autofix
 ```
 
-**Do not call `pytest` directly.** `just test` goes through testmon's
+**Don't call `pytest` directly.** `just test` goes through testmon's
 change-tracking; a raw invocation skips it and runs the full ~14 minute suite.
 A Claude Code hook blocks it for agent sessions.
 
@@ -339,18 +341,18 @@ skips the job marked *(python)* and runs the unit tier on Python 3.14 alone:
 no Python moved, so every unit test still runs, once. A push to `main` runs
 everything. `just ci-test` runs `lint` and the unit tier, in CI's order, on
 the full suite. `just test-targeted` is `just ci-test` with the tests testmon
-picks, and the full suite when it cannot see the change; Kraft's own
+picks, and the full suite when it can't see the change; Kraft's own
 verification runs it.
 
 | CI job | What it runs | Run it locally with |
 |---|---|---|
-| `lint` | ruff check and format, `dev/check_docs_coverage.py`, `dev/check_docs_walls.py`, `dev/check_docs_redirects.py`, `dev/check_docs_landings.py`, `dev/check_docs_shell.py`, `dev/check_docs_ledes.py`, `dev/check_docs_added_in.py`, `dev/check_addon_versions.py`, `dev/check_tests.py` | `just ci-test`, or `just lint` and `just check-tests` |
+| `lint` | ruff check and format, `dev/check_docs_coverage.py`, `dev/check_docs_walls.py`, `dev/check_docs_redirects.py`, `dev/check_docs_landings.py`, `dev/check_docs_shell.py`, `dev/check_docs_ledes.py`, `dev/check_docs_added_in.py`, `vale` (the docs' [voice and spelling](#voice-and-spelling)), `dev/check_addon_versions.py`, `dev/check_tests.py` | `just ci-test`, or `just lint`, `just vale` and `just check-tests` |
 | `changes` | decides whether the pull request is docs-only, or changes no Python, and so which Pythons the unit tier runs | nothing to run |
 | `test (python 3.12 / 3.13 / 3.14, 1/4 … 4/4)` *(code)* | the unit tier (`-m "not e2e"`) in four shards, with `python -m kraft.intent` in the first; on 3.12, 3.13 and 3.14 for a push to `main`, on 3.12 and 3.14 for a pull request, on 3.14 alone when it changes no Python | `just ci-test`, or `just test` and `just intent`; `just test-py 3.12` for another version |
-| `test report` *(code)* | the shards' junit annotations and the coverage comment; reports only, so it is not part of `test` | nothing to run |
+| `test report` *(code)* | the shards' junit annotations and the coverage comment; reports only, so it isn't part of `test` | nothing to run |
 | `docs tests` (docs-only pull requests) | the unit test files that name a docs path, on Python 3.14 | `just test` on the files the `git grep` in `test.yml`'s `docs-tests` job lists |
 | `test` | passes only when `lint`, every `test (python …)` leg, `e2e (real CLIs)`, `frontend`, `vscode`, `playwright` and `ui contract` all pass; a job that skips because of the paths changed (*(python)*, and on a docs-only pull request *(code)* too) counts as passing, and on a docs-only pull request `docs tests` must pass instead. Branch protection requires it alongside those jobs by name; once the ruleset names only `test` (with the kraft-lite checks, `removals declared` and `release impact declared`), the supported range and the job list can change without editing repo settings | nothing to run |
-| `e2e (real CLIs)` *(python)* | the e2e tier against real `bd`, bubblewrap, docker and podman | `just test -m e2e --no-testmon`; a test whose CLI is missing skips |
+| `e2e (real CLIs)` *(python)* | the e2e tier against real `bd`, bubblewrap, Docker and podman | `just test -m e2e --no-testmon`; a test whose CLI is missing skips |
 | `kraft-lite on python 3.10 / 3.14` | `plugins/kraft-lite/tests` with nothing installed but pytest | `just test plugins/kraft-lite/tests` |
 | `frontend` *(code)* | `npm ci`, `npm run build` (which typechecks), `npm test` | `just test-ui` |
 | `vscode` *(code)* | typecheck, unit tests, integration tests | `just test-vscode`, then `npm run test:integration` in `vscode/` |
@@ -375,7 +377,7 @@ or `removals declared` fails:
 - some-req-name -- superseded by other-req-name
 ```
 
-A renamed test counts as a removal, so list its old id. The PR template has
+A renamed test counts as a removal, so list its old ID. The PR template has
 these sections, commented out; [`docs/testing.md`](docs/testing.md) has the
 full rule. To check before you push, save the description to a file and run
 `uv run python dev/check_removals.py origin/main BODY.md`.
@@ -386,22 +388,22 @@ Kraft's version is the git tag. `setuptools-scm` derives it at build time, so
 there is no `version =` line to bump and no bump commit to forget.
 
 That removes the loud failure and leaves a quiet one: if nobody ever makes a
-tag, nothing fails — `main` just accumulates untagged commits while the install
-instructions keep serving a release from months ago. So every pull request
-declares what it ships, and a maintainer cuts a release from whatever has
+tag, nothing fails: `main` just accumulates untagged commits while the install
+instructions keep serving a release from months ago. Every pull request
+therefore declares what it ships, and a maintainer cuts a release from whatever has
 merged since the last one (see [RELEASING.md](RELEASING.md)).
 
 Put exactly one of these labels on your pull request:
 
 | Label | Means |
 |---|---|
-| `release::major` | a breaking change to the CLI, the API, or on-disk state |
-| `release::minor` | a new capability that does not break an existing one |
+| `release::major` | a breaking change to the CLI, the API or on-disk state |
+| `release::minor` | a new capability that doesn't break an existing one |
 | `release::patch` | a fix to something that already shipped |
 | `release::none` | no bump of its own: it goes out with the next release |
 
 `release::none` is a first-class answer, and the expected one for documentation,
-comments, CI configuration and test-only changes. It does not keep a change out
+comments, CI configuration and test-only changes. It doesn't keep a change out
 of a release (every merged change is in the next one); it only adds no weight
 to the bump and no line to the notes.
 
@@ -409,7 +411,7 @@ Nothing checks that the declared impact matches the diff. The label is a claim b
 its author; review is what tests it.
 
 A pull request that ships something writes its user-facing line in the
-`## Changelog` section of its description. Do not edit `CHANGELOG.md`: the
+`## Changelog` section of its description. Don't edit `CHANGELOG.md`: the
 release writes it. A pull request that leaves the section empty is listed by
 its title.
 
@@ -441,7 +443,7 @@ Keep pictures to highlights: an entry under New or Fixes is one line. A
 `release::none` pull request with the label stops the release, since there is
 no entry to highlight. See [RELEASING.md](RELEASING.md#cut-a-release).
 
-**Pull requests from forks are not asked for a label** — only people with write
+**Pull requests from forks aren't asked for a label**: only people with write
 access can apply one. A maintainer labels the pull request before merging. One
 merged without a label stops the next release, naming it; label it (labels
 can still be changed after merge) and run the release again.
@@ -478,7 +480,7 @@ is retaken with `just docs-screenshots` too; see the screen row under
 [User-facing docs](#user-facing-docs).
 
 In a cloud session, pushing that branch needs the user's approval in the session
-that does the pushing. Ask for it; do not assume it.
+that does the pushing. Ask for it; don't assume it.
 
 `kraft/pr-686-screenshots` is the example. It holds two files at its root, no
 folders and no code: `before-skipped-task.png` and `after-skipped-task.png`,
@@ -493,14 +495,14 @@ as well.
 Two ways a branch you're reusing by hand can quietly cost you work:
 
 **Don't reuse a branch after its pull request merges.** This repo merges by
-squash, so the branch's own commits never become ancestors of `main` — only
+squash, so the branch's own commits never become ancestors of `main`; only
 their squashed equivalent does. Push more commits onto that same branch
-afterward and `git diff` against its old merge-base re-presents everything the
+afterwards and `git diff` against its old merge-base re-presents everything the
 squash already landed. Cut a fresh branch from `origin/main` instead.
 
 **Rebuilding a branch by `git reset` + cherry-pick can silently orphan a
 commit.** Resetting a branch to an earlier point and re-picking commits drops
-anything you forgot to include — no warning, and the commit survives only as a
+anything you forgot to include, with no warning, and the commit survives only as a
 dangling object until the next `git gc`. Before you reset, capture the tip:
 
 ```bash
@@ -514,7 +516,7 @@ git log --oneline "$old" --not mybranch   # non-empty means something is missing
 
 `docsite/` is the published documentation site (a Nuxt/Docus app; `nuxt
 generate`, deployed to GitHub Pages by `.github/workflows/docs.yml` on every
-push to `main`). It is not `docs/intent/` below, which only a contributor
+push to `main`). It isn't `docs/intent/` below, which only a contributor
 reads. If your change touches any of the sources below, update the matching
 page in the same pull request, not as a follow-up.
 
@@ -562,7 +564,7 @@ Page rules:
   any docs address that Kraft itself links to and that no longer resolves.
   It also fails a `](/page#heading)` link between pages that lands on no
   heading, or on an address the file forwards (write the target), so a
-  moved heading cannot leave a dead link behind.
+  moved heading can't leave a dead link behind.
 - Mark what is new. A page, section or CLI verb that is new since the latest
   release carries `_Added in next_` on its own line directly under its heading
   (a new page: under its title, which covers its sections), or at the end of
@@ -574,15 +576,15 @@ Page rules:
   then "Added in 2.1"); in the Markdown, `llms-full.txt` and search it stays plain
   words. `dev/check_docs_added_in.py` (the `lint` job) compares `docsite/content`
   with the latest release tag and fails on a new page, heading or verb with no
-  note, on a note in the wrong place or naming a release that does not exist,
+  note, on a note in the wrong place or naming a release that doesn't exist,
   and warns on a `next` note on something the release already had. A heading
-  is not new if its page moved (`redirects.yml`), or if you say so under it:
+  isn't new if its page moved (`redirects.yml`), or if you say so under it:
   `<!-- renamed from: Old heading -->` for an old heading under a new name
   (`/page#Old heading` from another page, `/old/page` for a page split or
   renamed), `<!-- not new: why -->` for new text about something that already
-  shipped. The comment does not render, and the release deletes it.
+  shipped. The comment doesn't render, and the release deletes it.
 - No comment in a shell block (`bash`, `sh`, `shell`, `zsh`, `console`): an
-  interactive zsh, the macOS default, does not read `#` as one, so a
+  interactive zsh, the macOS default, doesn't read `#` as one, so a
   pasted `cmd # note` fails with `command not found: #`. Put the remark in
   the sentence above the block. `dev/check_docs_shell.py` (the `lint` job)
   fails a line that starts with `#` or has one after whitespace outside
@@ -623,9 +625,41 @@ a page that doesn't parse, but a link to a page or heading that no longer
 exists renders instead of failing the build. The docs workflow catches those:
 on a pull request it runs [lychee](https://lychee.cli.rs) over the built
 pages and their Markdown, and fails on a broken internal link, a missing anchor, or an external
-link that does not answer. Nothing catches "this paragraph no longer describes the
+link that doesn't answer. Nothing catches "this paragraph no longer describes the
 code", and `docs/intent/`'s `enforced-by:` pinning doesn't either. Read the
 page you're touching, not just the code.
+
+### Voice and spelling
+
+[Vale](https://vale.sh) checks the docs site, the README and the contributor docs
+against the house style. `just vale` runs it, and so do the pre-commit hook and the `lint` job. The
+rules live in `.vale/styles/Kraft/`:
+
+- British spelling, -ise forms: colour, behaviour, labelled, organise. The rule
+  lists the US forms to catch (`British.yml`); add one when it slips through.
+- Contractions for a negation: doesn't, can't, isn't. Not it's or that's: a
+  contraction can't end a clause.
+- One word per term: re-run, sub-agent, signed in, ID, URL, Docker, Markdown,
+  merge request. The pages about Kraft's own GitHub repo say pull request: the
+  contributor docs, and the docs site's Contributing and Source map pages
+  (`.vale.ini` turns the rule off there).
+- No comma before the "and" or "or" that ends a list.
+- `select`, not `click`. The present tense, not `will`. No sentence that
+  starts with `So`, no spaces around a dash, no `very`.
+
+`just vale` covers `docsite/content`, the README, the VS Code extension's
+README (its Marketplace page) and the contributor docs
+(`vale_paths` in the justfile, which CI's step repeats), not `docs/intent/` or an
+add-on's README. Inline code, fenced code and a component's YAML props are
+skipped.
+
+Where the text quotes something exactly, such as a label the app spells its
+own way, turn that one rule off around it, with
+`<!-- vale Kraft.Dashes = NO -->` before and
+`<!-- vale Kraft.Dashes = YES -->` after. A phrase quoted in many places goes
+in `.vale.ini`'s `TokenIgnores`, as the review outcome "could not decide" does.
+A heading reworded for the style is a renamed heading: give it a `renamed
+from` note, and a redirect if a page links to it.
 
 ### Versions of the docs
 
@@ -695,7 +729,7 @@ agent reported none (Codex, Cursor, Amp). It is a snapshot of
 models.dev's Anthropic and OpenAI listings, with Anthropic cache writes priced
 at the one-hour tier Claude Code uses (2x input). Nothing refreshes it
 automatically: when a provider's prices change, or a harness starts running a
-model the file does not list, run `just refresh-prices`, review the diff, and
+model the file doesn't list, run `just refresh-prices`, review the diff, and
 commit it. A model missing from the file gets no estimate, so its running
 sessions count as unpriced towards the budget until they exit, and a finished
 one that reported no cost counts $0 toward the item and daily caps (with a
@@ -703,7 +737,7 @@ one that reported no cost counts $0 toward the item and daily caps (with a
 
 ## Design documents
 
-Specs and implementation plans are not committed. `.engineering/` and
+Specs and implementation plans aren't committed. `.engineering/` and
 `docs/superpowers/` are gitignored. Kraft itself writes a work item's
 documents under `$KRAFT_HOME/run/items/<id>/docs/`, outside the repository;
 `.engineering/` stays ignored for your own specs and for worktrees where an

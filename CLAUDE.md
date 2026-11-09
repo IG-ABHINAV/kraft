@@ -2,7 +2,7 @@
 
 ## Build & Test
 
-Everything goes through `just` — run `just` for the list.
+Everything goes through `just`: run `just` for the list.
 
 ```bash
 just setup      # uv sync + npm ci; Kraft workers run `just setup setup-plugins`
@@ -11,6 +11,7 @@ just test       # backend tests affected by your changes (testmon); --no-testmon
 just test-ui    # frontend typecheck + unit tests
 just test-py 3.12  # the unit tier on another Python (CI runs 3.12, 3.13, 3.14); `requires-python` is the floor
 just lint       # ruff check + format check
+just vale       # docs style: British spelling, contractions, one word per term
 ```
 
 **Never call `pytest` / `uv run pytest` directly.** Always go through `just
@@ -148,7 +149,7 @@ databases, logs and worktrees, `config/` for the YAML the Templates and
 Settings screens edit (`templates/` before 2.0), seeded from the packaged
 defaults in the repo's `config/` on first run and never overwritten after. Only
 `library.yaml` and `chains/` are templates; the rest is configuration. Kraft's
-own chains and library are not copied there: they are the built-in add-on
+own chains and library aren't copied there: they are the built-in add-on
 `kraft-default@kraft`, read from the installed Kraft (a source checkout reads
 the repo's `config/`), so a seeded home holds only thin `default` and
 `quick-task` chains that `extends: kraft-default:<id>` and an empty
@@ -160,9 +161,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Conventions & Patterns
 
-### Specs and plans are not committed
+### Specs and plans aren't committed
 
-Design docs and implementation plans do not go into git. `.engineering/` and
+Design docs and implementation plans don't go into git. `.engineering/` and
 `docs/superpowers/` are both gitignored. Kraft writes its own specs, plans,
 review briefs and session summaries outside the repository, under
 `~/.kraft/run/items/<work-item-id>/` (`docs/` and `sessions/`). `.engineering/`
@@ -219,7 +220,7 @@ CONTRIBUTING.md's "User-facing docs" has the details.
 
 ### The test tree mirrors the source tree
 
-A test for `src/kraft/<pkg>/<mod>.py` lives at `tests/<pkg>/test_<mod>.py` — not
+A test for `src/kraft/<pkg>/<mod>.py` lives at `tests/<pkg>/test_<mod>.py`, not
 `tests/test_<pkg>_<mod>.py`. Flat names under a hierarchical source is how the
 layout drifted the first time. A module with no package mirrors nothing and
 stays at `tests/test_<mod>.py`.
@@ -229,8 +230,8 @@ load-bearing, not tidiness. The mirrored tree has duplicate basenames (about
 twenty: `test_gates.py` exists under `api/`, `executor/` and the root,
 and so on for `test_db`, `test_auth`, `test_review`, `test_run` and more),
 which pytest's default prepend import mode rejects as a hard collection error.
-Packages fix it with no config change, and they keep `tests/` on `sys.path` —
-which the many files doing `from support.harness import ...` depend on. Do not
+Packages fix it with no config change, and they keep `tests/` on `sys.path`,
+which the many files doing `from support.harness import ...` depend on. Don't
 "simplify" this by switching to `--import-mode=importlib`; that drops `tests/`
 off `sys.path` and breaks every one of them.
 
@@ -247,9 +248,9 @@ Two things bite when you move or add a nested test:
 
 Read `docs/testing.md` before the first test. The short version a worker needs:
 
-- **A fix adds a row, not a function.** Find the test that covers the behavior
+- **A fix adds a row, not a function.** Find the test that covers the behaviour
   and add a `parametrize` case with an `id`. A new `def test_` is for a new
-  behavior.
+  behaviour.
 - **Grep `tests/support/` before writing a helper.** `support.harness` has
   `make_repo`, `commit_all`, `connect_repo`, `git`, `write` and the `v1_*`
   chain builders; `support.api` has the client pollers (`_poll_events`,
@@ -263,7 +264,7 @@ Read `docs/testing.md` before the first test. The short version a worker needs:
 ### Marking a task already done in a reused plan
 
 A plan attached to one work item is sometimes reused for a later item that
-only implements one of its tasks — the rest already merged elsewhere. Say so
+only implements one of its tasks: the rest already merged elsewhere. Say so
 on the heading itself, not in prose the tooling can't read:
 
 ```
@@ -278,15 +279,15 @@ running work item.
 
 A session with `$KRAFT_WORK_ITEM_ID` set is a Kraft worker, running in a
 throwaway git worktree on its own branch. It commits everything it changes
-before it exits — uncommitted work never reaches the merge request and is
+before it exits: uncommitted work never reaches the merge request and is
 destroyed with the worktree. This overrides any standing instruction not to
 run `git commit` (the maintainer's own agent profile has one), for commits
-only: a worker still does not push, merge, sync Dolt (the versioned database
+only: a worker still doesn't push, merge, sync Dolt (the versioned database
 beads stores its issues in), or close beads. Kraft does those itself.
 
 superpowers and ponytail are off in a worker: their skills are refused, and an
 instruction that says you have superpowers, must use one of their skills, or are
-in a PONYTAIL mode does not apply. Follow these rules and the instructions Kraft
+in a PONYTAIL mode doesn't apply. Follow these rules and the instructions Kraft
 gave the session instead.
 
 A worker's environment is built from an allowlist, not inherited from whatever
@@ -295,8 +296,8 @@ vars, the nine `KRAFT_*` that locate the instance (`KRAFT_HOME`, `KRAFT_RUN_DIR`
 `KRAFT_CONFIG_DIR` and its 1.x name `KRAFT_TEMPLATES_DIR`, `KRAFT_SKILLS_DIR`, `KRAFT_HOST`, `KRAFT_PORT`,
 `KRAFT_DAEMON_PID`, `KRAFT_DAEMON_PORT`) plus the ones Kraft sets per session, and
 Claude Code's credential vars (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`; another agent's key needs `env_passthrough`). Any other `KRAFT_*` var, and anything else a
-repo needs, is declared in its `repos.yaml` entry — `env:` for literal values,
-`env_passthrough:` to name a var the daemon already has. Do not assume a
+repo needs, is declared in its `repos.yaml` entry: `env:` for literal values,
+`env_passthrough:` to name a var the daemon already has. Don't assume a
 variable from your own shell is present in a worktree.
 
 @CLAUDE.local.md

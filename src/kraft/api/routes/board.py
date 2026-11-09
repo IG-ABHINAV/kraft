@@ -11,9 +11,11 @@ from kraft import caps, escalate, events, executor, inplace, reviewed_head, stor
 from kraft import config as config_mod
 from kraft import policy as policy_mod
 from kraft import progress as progress_mod
+from kraft import slices as slice_plans
 from kraft.adapters import forge as forge_mod
 from kraft.api import api_router, deps
 from kraft.cap_levels import SCOPE_CAP_FIELDS
+from kraft.slices import SliceSplit, parse_slices
 from kraft.templates.forks import ChainPath
 from kraft.vocab import (
     COMMANDS_MAY_START,
@@ -29,6 +31,7 @@ from kraft.vocab import (
     EscalationEvent,
     ForgeEvent,
     GateEvent,
+    GroupPhase,
     LimitEvent,
     SessionEvent,
     SessionStatus,
@@ -510,11 +513,6 @@ async def list_work_items(request: Request):
     mr_event_by_item = {e["work_item_id"]: json.loads(e["payload"]) for e in mr_event_rows}
     root_mr_by_item = {r["work_item_id"]: r["mr_ref"] for r in root_rows}
     task_by_item = {t["work_item_id"]: t["hook_point"] for t in task_rows}  # latest wins
-    kids_by_parent: dict[str, list] = {}
-    views_by_parent: dict[str, list] = {}
-    for kid, view in zip(doors["children"], doors["child_views"], strict=True):
-        kids_by_parent.setdefault(kid["parent_id"], []).append(kid)
-        views_by_parent.setdefault(kid["parent_id"], []).append(view)
 
     def _list_escalated(wid: str) -> bool:
         boundary, last = boundary_by_item.get(wid), escalation_by_item.get(wid)
@@ -523,6 +521,29 @@ async def list_work_items(request: Request):
             and last is not None
             and last["seq"] > boundary["seq"]
             and _turn_live(last["session_status"], last["created_at"])
+        )
+
+    def _list_shown(r, summary: dict | None = None) -> DisplayStatus:
+        """`display_status` from the grouped reads, for a row and a child alike."""
+        return display_status(
+            r,
+            _stop_kind(
+                r["stop_kind"],
+                r["status"],
+                pending.get(r["id"]),
+                _boundary_payload(boundary_by_item.get(r["id"]), r["status"]),
+            ),
+            _list_escalated(r["id"]),
+            pending.get(r["id"]),
+            summary,
+        )
+
+    kids_by_parent: dict[str, list] = {}
+    views_by_parent: dict[str, list] = {}
+    for kid, view in zip(doors["children"], doors["child_views"], strict=True):
+        kids_by_parent.setdefault(kid["parent_id"], []).append(kid)
+        views_by_parent.setdefault(kid["parent_id"], []).append(
+            {**view, "display_status": _list_shown(kid)}
         )
 
     def _list_actions(r, mr_ref: dict | None, chain) -> list[str]:
@@ -554,18 +575,7 @@ async def list_work_items(request: Request):
             mr_event_by_item.get(r["id"]),
         )
         summary = slices_summary(r, kids_by_parent.get(r["id"], []))
-        shown = display_status(
-            r,
-            _stop_kind(
-                r["stop_kind"],
-                r["status"],
-                pending.get(r["id"]),
-                _boundary_payload(boundary_by_item.get(r["id"]), r["status"]),
-            ),
-            _list_escalated(r["id"]),
-            pending.get(r["id"]),
-            summary,
-        )
+        shown = _list_shown(r, summary)
         return {
             "id": r["id"],
             "title": r["title"],
@@ -632,7 +642,8 @@ _SLICE_COUNT = {
 
 def _child_views(c, children: list[dict]) -> list[dict]:
     """Each child as its parent's list row and detail show it, with its cost:
-    `usage_rollup`'s total, summed for every child in one query."""
+    `usage_rollup`'s total, summed for every child in one query. The caller
+    adds `display_status`, from the stop reads it already has."""
     ids = [k["id"] for k in children]
     if not ids:
         return []
@@ -649,13 +660,20 @@ def _child_views(c, children: list[dict]) -> list[dict]:
             "title": k["title"],
             "slice_key": k["slice_key"],
             "status": k["status"],
-            "display_status": TRAITS[WorkItemStatus(k["status"])].display
-            or DisplayStatus.NEEDS_YOU,
             "current_node_id": k["current_node_id"],
             "cost_usd": spent.get(k["id"], 0.0),
         }
         for k in children
     ]
+
+
+def _child_display_status(st, kid) -> DisplayStatus:
+    """A child's badge on its parent's detail, by the rule its own detail uses."""
+    pending = _pending_gate(st, kid["id"])
+    stop_payload, escalated = _stop_episode(st, kid["id"])
+    return display_status(
+        kid, _stop_kind(kid["stop_kind"], kid["status"], pending, stop_payload), escalated, pending
+    )
 
 
 def slices_summary(row, children: list) -> dict | None:
@@ -674,6 +692,42 @@ def slices_summary(row, children: list) -> dict | None:
         total += 1
         counts[_SLICE_COUNT.get(WorkItemStatus(kid["status"]), "running")] += 1
     return {**counts, "total": total} if total else None
+
+
+#: A group's stored phase (`store.GroupState.phase`) as its views name it.
+_GROUP_PHASE = {
+    "deciding": GroupPhase.DECIDING,
+    "prelude": GroupPhase.GROUNDWORK,
+    "forked": GroupPhase.SLICES,
+    "joining": GroupPhase.JOINING,
+    "joined": GroupPhase.JOINED,
+}
+
+
+def group_view(st, row, chain: dict) -> dict | None:
+    """The item's slice group as its views draw it, or None for a chain with
+    none: its id; its phase (`vocab.GroupPhase`), None until the run reaches it;
+    the plan's shared-groundwork tasks and its slices, read as the group reads
+    them (none for a plan with no usable `## Slices` section); and how many
+    slices the join has replayed. A slice's child is the parent's child of the
+    same `slice_key`."""
+    # A legacy row's nodes name no kind.
+    group = next((n for n in chain["nodes"] if n.get("kind") == "group"), None)
+    if group is None:
+        return None
+    state = store.GroupState.from_json(row["group_state"]) if row["group_state"] else None
+    plan = slice_plans.slicing_input(st.run_dirs, row, deps.max_slices(st))
+    split = parse_slices(plan.plan_text, max_slices=plan.max_slices) if plan.plan_text else None
+    split = split if isinstance(split, SliceSplit) else None
+    return {
+        "id": group["id"],
+        "phase": _GROUP_PHASE[state.phase] if state else None,
+        "groundwork": list(split.prelude) if split else [],
+        "slices": [{"key": s.key, "title": s.title, "tasks": list(s.tasks)} for s in split.slices]
+        if split
+        else [],
+        "joined": state.joined_through if state else 0,
+    }
 
 
 def _queued(row, event: dict | None, **more) -> dict | None:
@@ -1471,8 +1525,16 @@ async def get_work_item(wid: str, request: Request):
         # The override columns decoded, as every action and gate echo has them.
         **payload,
         # A parent lists the children of its current generation; a child names its parent.
-        "children": st.db.read(lambda c: _child_views(c, children)) if children else None,
+        "children": [
+            {**view, "display_status": _child_display_status(st, kid)}
+            for kid, view in zip(
+                children, st.db.read(lambda c: _child_views(c, children)), strict=True
+            )
+        ]
+        if children
+        else None,
         "slices": slices,
+        "group": group_view(st, row, chain),
         "parent_id": row["parent_id"],
         "slice_key": row["slice_key"],
         "chain_definition": chain,

@@ -30,14 +30,14 @@ something. This is normative for `tests/` and `frontend/src/**/*.test.*`;
   guard fires takes `real_binary_guard` and calls `.take()` on what it
   refused.
 - **E2E (`@pytest.mark.e2e("<cli>")`).** A real CLI, used only to prove the
-  contract Kraft assumes: args, subcommands and output shape. Keep it small:
+  contract Kraft assumes: arguments, subcommands and output shape. Keep it small:
   one or two tests per contract, never behaviour sweeps. If the binary is
   missing the test skips and names the binary; CI's e2e job sets
   `KRAFT_E2E_REQUIRE=bd,bwrap,docker,podman`, so for those four that skip
   becomes a failure, and its macOS job sets `sandbox-exec` the same way.
   Every `e2e` marker must name at least one
   CLI (`pytest_collection_modifyitems` in `tests/conftest.py` raises
-  `UsageError` if it doesn't) — `dev/check_tests.py` catches the same defect
+  `UsageError` if it doesn't): `dev/check_tests.py` catches the same defect
   statically, before collection. A test naming a real agent (`claude`)
   also needs `KRAFT_E2E=1`, since it spends tokens, and CI's e2e job has no
   agent credential, so those skip there. The one that matters,
@@ -69,12 +69,12 @@ fixture refuses to answer a `param == "bd"` request against the fake).
 
 ## Shape
 
-- **One behaviour, one test; one case, one row.** A fix to a behavior that
+- **One behaviour, one test; one case, one row.** A fix to a behaviour that
   already has a test adds a `parametrize` case to that test, with a readable
-  `id`, not a new function. A new function is for a new behavior. When you
+  `id`, not a new function. A new function is for a new behaviour. When you
   find yourself writing `test_x_with_a_malformed_file`,
   `test_x_with_invalid_utf8`, `test_x_with_permission_denied`, that is one
-  behavior ("x reports a bad file cleanly") and three rows.
+  behaviour ("x reports a bad file cleanly") and three rows.
 
   ```python
   @pytest.mark.parametrize("after_days", [None, 0], ids=["none", "zero"])
@@ -85,14 +85,14 @@ fixture refuses to answer a `param == "bd"` request against the fake).
 - **Setup lives in fixtures and factories, not inline.** The backend's
   shared ones live in `tests/conftest.py` and `tests/support/`, each with a
   docstring and a usage example:
-  - `database` (async) — an open, migrated `db.Database` at `run_dirs.db`,
+  - `database` (async): an open, migrated `db.Database` at `run_dirs.db`,
     closed at teardown. Write the test `async def` and take the fixture;
     don't hand-roll `asyncio.run(scenario())`.
-  - `run_dirs` — `RunDirs(tmp_path / "run").ensure()`, what `database` and
+  - `run_dirs`: `RunDirs(tmp_path / "run").ensure()`, what `database` and
     every `store` reader take alongside it.
-  - `repo` — a committed copy of `tests/support/sample_repo`
+  - `repo`: a committed copy of `tests/support/sample_repo`
     (`support.harness.make_repo`), never built from scratch.
-  - `client` — a started `TestClient` on the Kraft app, hermetic under
+  - `client`: a started `TestClient` on the Kraft app, hermetic under
     `tmp_path`. Options go on `@pytest.mark.api_client(...)`, not on the
     fixture's own arguments; a table whose rows need different options
     (a bind, a peer) passes the same dict per row with
@@ -101,24 +101,24 @@ fixture refuses to answer a `param == "bd"` request against the fake).
     fixture itself (`request.getfixturevalue("dist")`) whenever a test also
     lists `dist`, so it works whichever order the two are listed in
     (below).
-  - `templates_dir` — `KRAFT_CONFIG_DIR` with every agent on the fake
+  - `templates_dir`: `KRAFT_CONFIG_DIR` with every agent on the fake
     `claude`. Override it in a file that needs a different shape (an
     edited library or chain); `client` picks the override up
     because it takes `templates_dir` as an argument, not because of
     argument order.
-  - `dist` (`tests/api/conftest.py`) — a built SPA (`index.html` and one
+  - `dist` (`tests/api/conftest.py`): a built SPA (`index.html` and one
     asset) pinned as `KRAFT_FRONTEND_DIST`, for the api tier's SPA-shell
     tests.
-  - `item_on(chain, node=None, *, repo=None, **kwargs)` — files a V1 work
+  - `item_on(chain, node=None, *, repo=None, **kwargs)`: files a V1 work
     item in `database`, standing at `node`, and returns a
     `support.harness.Item`: `.row()`, `.status()`, `.events(type)`,
     `.sessions(node)`, `.worktree`, `await .session(sid, "node.step.task",
     status, ...)`.
-  - `bd` — `support.fake_beads.Bd`: `.status(id, cwd=)`, `.ids(cwd=)`,
+  - `bd` (`support.fake_beads.Bd`): `.status(id, cwd=)`, `.ids(cwd=)`,
     `.block(id, blocker, cwd=)`, `.init(path)`, answered by the fake in the
     unit tier and the real CLI under `e2e("bd")` (see `ON_FAKE_AND_REAL_BD`
     above).
-  - `app` / `stub_app` — the ASGI app and a fake poller `app.state`, for
+  - `app` / `stub_app`: the ASGI app and a fake poller `app.state`, for
     tests below the HTTP layer.
 
   Frontend setup lives in the area's own testkit under
@@ -126,7 +126,7 @@ fixture refuses to answer a `param == "bd"` request against the fake).
   `testSupport.tsx` beside the tests (`ng/item/testkit.tsx` has `detail()`
   and `stubFetch()`; `ng/library/fixture.ts` a library draft; there are more
   under `ng/settings/`, `ng/harnesses/`, `ng/phone/areas/`, `ng/templates/` and
-  `ng/item/draft/`) —
+  `ng/item/draft/`):
   factories that take overrides, not copy-pasted object literals. Add a
   factory to the nearest one the second time a setup recurs, not to a new
   top-level file. `frontend/src/testFixtures.ts` is the older shared set that
@@ -135,11 +135,11 @@ fixture refuses to answer a `param == "bd"` request against the fake).
 
 - **A fixture that depends on another should pull it itself, not rely on
   argument order.** The `dist` fixture first only worked when listed
-  before `client` in a test's signature — pytest sets fixtures up in
+  before `client` in a test's signature: pytest sets fixtures up in
   argument order, so that was fragile and silently broke when someone
   reordered arguments. The fix: `client` calls
   `request.getfixturevalue("dist")` itself, right before it builds the test
-  client, whenever a test also lists `dist` — so listing order between the
+  client, whenever a test also lists `dist`, so listing order between the
   two no longer matters. Prefer that shape for any new fixture that
   composes with another: pull, don't hope for order.
 
@@ -166,7 +166,7 @@ breaks.
    mutation): flip a comparison, drop a branch, change a default, delete a
    guard.
 2. Run that one case: `just test <path> -k 'name and case_id'`.
-3. Confirm it fails — and fails for the reason you broke, not for an
+3. Confirm it fails, and fails for the reason you broke, not for an
    unrelated setup error. If it still passes, the test pins nothing; fix
    the test, not the changelog entry.
 4. Revert the mutation.
@@ -192,15 +192,15 @@ body assertion, or a bare `assert result` with no shape check, is close to
 one of the five shapes above.
 
 **Removing a test means accounting for it:** name what replaces it, or
-state what it uniquely pinned — "nothing, proven by mutation" is a valid
+state what it uniquely pinned: "nothing, proven by mutation" is a valid
 answer, but it has to be checked, not assumed. A fold declares its whole
 cluster in one wildcard line (the rule is below) and proves one mutation per
 row.
 
 CI holds a pull request to that. `dev/check_removals.py`, run by the
 `removals declared` job, fails when the PR deletes a test function (or a
-frontend test file) or drops an intent `## REQ` heading that its body does
-not list under a `Removed tests` or `Removed requirements` heading, one id
+frontend test file) or drops an intent `## REQ` heading that its body doesn't
+list under a `Removed tests` or `Removed requirements` heading, one ID
 per line with the reason after it:
 
 ```markdown
@@ -213,33 +213,33 @@ per line with the reason after it:
 - some-req-name -- superseded by other-req-name
 ```
 
-A renamed test counts as removed plus added, so list its old id. A deleted
+A renamed test counts as removed plus added, so list its old ID. A deleted
 file may be listed by its path; a file that only loses some tests may not.
 A parametrize case the PR drops counts as a removal too
-(`tests/test_x.py::test_y[refused]`, with ids read off the source where it
+(`tests/test_x.py::test_y[refused]`, with IDs read off the source where it
 spells them out), and so does a test it newly marks `@pytest.mark.skip`,
-listed by its own id; a test removed whole is declared by its id, cases and
+listed by its own ID; a test removed whole is declared by its ID, cases and
 all. The heading may end in a colon. The failure prints the missing block ready to paste. Edit the body, then
 re-run the job: it reads the body fresh, not from the push that triggered
 it. This exists because a PR once silently reverted two merged PRs with CI
-green — their tests left with them (Kraft-79382).
+green: their tests left with them (Kraft-79382).
 
 A fold declares its cluster with a wildcard, so consolidation is one line per
-cluster: an id whose test name ends in `*` covers every removed test in that
-same file whose id starts with the rest (cases included, `[` read literally).
+cluster: an ID whose test name ends in `*` covers every removed test in that
+same file whose ID starts with the rest (cases included, `[` read literally).
 The path stays literal, since a wildcard across files would hide exactly the
 revert this job exists to catch, and a deleted file is still declared by its
 plain path. The prefix must be longer than `test_`, and the line must name the
 replacement as a `path::test` that exists at HEAD (a `[case]` or `[...]`
 suffix is fine). A wildcard that is refused declares nothing, and one that
 matches no removed test fails the job as unused, so a typo in the prefix
-cannot pass unnoticed; each prints its own line saying what to fix.
+can't pass unnoticed; each prints its own line saying what to fix.
 
-**Intent pins:** `docs/intent/*.md` reference test ids by name. Renaming or
+**Intent pins:** `docs/intent/*.md` reference test IDs by name. Renaming or
 parametrizing a pinned test means repointing it in the same change. Run
 `just intent` and `tests/test_intent_origins.py`. `just intent-repoint OLD NEW`
 rewrites every pin on `OLD` (or `OLD[case]`) to `NEW` in one go, and refuses
-when `NEW` does not collect.
+when `NEW` doesn't collect.
 
 ## Running
 
@@ -247,7 +247,7 @@ when `NEW` does not collect.
   (`-n` your logical CPUs + 2) unless you pass `-n` or `-p no:xdist`, name a single test, or
   ask for live output (`-s`, `--capture`, `--trace`); `-n 0` stays in one
   process. `just test-ui` for the frontend.
-- Testmon follows Python execution only, so it cannot see a change to a
+- Testmon follows Python execution only, so it can't see a change to a
   file a test reads or runs as a subprocess: a harness YAML, a skill's
   `.md`, `fixtures/fake-claude.sh`, the `tests/support/` files no test
   imports (the sample repo, the fake agents and reviewer, the non-Python
@@ -258,7 +258,7 @@ when `NEW` does not collect.
   a bare `just test` only warns, since its fallback would be the whole suite.
   `src/kraft/_bundled` is built from `config/` and `plugins/kraft/skills`,
   which are watched in its place. Environment variables are the same blind
-  spot and are not watched. `just test-targeted`, which verification runs,
+  spot and aren't watched. `just test-targeted`, which verification runs,
   runs the full suite for these, with three exceptions that add named tests
   instead (`dev/targeted_tests.py` lists them): `docs/intent/` runs
   `tests/test_intent_origins.py` and the intent check; a YAML or JSON file
@@ -272,7 +272,7 @@ when `NEW` does not collect.
   sets another count (for a Kraft worker, in the repo's `repos.yaml` `env:`).
   Those lists come from tracing readers; `just check-targeted-maps` checks
   them by experiment, running the full suite before and after such a change
-  and failing on a new failure in a test the plan did not name.
+  and failing on a new failure in a test the plan didn't name.
 - `just test <paths>` fails when nothing ran: a path that collects nothing,
   and a run testmon (or `-k`/`-m`) deselected to `0 selected`. Pass
   `--no-testmon` to run the paths regardless.
@@ -298,7 +298,7 @@ when `NEW` does not collect.
   hung, and the `Timeout` stack dump above says where. Its teardown never
   runs, so what it started outside the process stays. The sandbox e2e
   fixture (`tests/worker/test_egress_docker.py`) removes the relays, volume
-  and worker a killed run left at the next run. So a test's own wait must
+  and worker a killed run left at the next run, so a test's own wait must
   end well inside that timeout, or the test must raise its own with
   `@pytest.mark.timeout(N)`: a wait the timeout cuts short never gets to
   fail with its own message.
@@ -306,9 +306,9 @@ when `NEW` does not collect.
 ## Enforced mechanically
 
 `dev/check_tests.py`, run in CI's `lint` job, next to
-`dev/check_docs_coverage.py`. It checks what can be checked statically —
+`dev/check_docs_coverage.py`. It checks what can be checked statically:
 not "did you prove a mutation," which needs a human or an agent, but the
-shape rules that don't — over both testpaths, `tests/` and
+shape rules that don't, over both testpaths, `tests/` and
 `plugins/kraft-lite/tests/`:
 
 - **(a)** every `pytest.mark.e2e` names at least one CLI.
@@ -323,7 +323,7 @@ shape rules that don't — over both testpaths, `tests/` and
   runtime guard (`tests/conftest.py`'s autouse fixtures) is what actually
   stops it at test time.
 - **(c)** a per-file line budget for `tests/**`, with an explicit allowlist
-  (`LINE_BUDGET_ALLOWLIST`, a dict at the top of `dev/check_tests.py` —
+  (`LINE_BUDGET_ALLOWLIST`, a dict at the top of `dev/check_tests.py`:
   there is no separate allowlist file) naming today's over-budget files and
   their current size. An allowlisted file may shrink but not grow past its
   recorded size; a new file must be under budget from the start. The
@@ -332,14 +332,14 @@ shape rules that don't — over both testpaths, `tests/` and
   margin above the file's real size, fails the check until it's tightened
   or removed.
 - **(d)** every `def test_` has an assert, a `pytest.raises`/`pytest.warns`,
-  or delegates to a same-module helper that does. One that cannot fail does
-  not count: `assert True` (or `x or True`, or a tuple), a bare
+  or delegates to a same-module helper that does. One that can't fail doesn't
+  count: `assert True` (or `x or True`, or a tuple), a bare
   `pytest.raises(Exception)` with no `match=`, an assert under
   `if False:`, or one only inside a nested function nothing calls or passes
   on. A handful of tests where
-  "did not raise" is genuinely the only honest assertion are named in
+  "didn't raise" is genuinely the only honest assertion are named in
   `EXPECTATION_ALLOWLIST` (same file), each with an inline reason; an entry
-  for a test id that no longer exists fails the check.
+  for a test ID that no longer exists fails the check.
 - **(e)** no helper body is copied across test files: a module-level function
   (not `test_*`) with the same body as one in another test file, or as a
   function in `tests/support/` (underscore or not), fails the check, naming
@@ -356,7 +356,7 @@ shape rules that don't — over both testpaths, `tests/` and
   tightened (`just shape-report --print-helper-ceiling` prints the real
   numbers).
 
-A parse failure in the checker is a failure, not a skip — a checker that
+A parse failure in the checker is a failure, not a skip: a checker that
 can't read a file must not read as "passing" (this is the same bug class
 the docsite coverage check guards against: silent success is worse than a
 loud, wrong failure).

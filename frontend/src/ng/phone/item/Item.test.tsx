@@ -62,6 +62,13 @@ describe("the item screen (C)", () => {
     expect(marker.closest(".ph-item-meta")).not.toBeNull();
   });
 
+  it("names a slice's parent in its header, a link back to it", async () => {
+    mount({ ...item("running"), parent_id: "p1", bead_id: "kraft-c1" });
+    const parent = await screen.findByRole("link", { name: "p1" });
+    expect(parent).toHaveAttribute("href", "/work-items/p1");
+    expect(parent.closest(".ph-header-id")).toHaveTextContent("p1 › kraft-c1");
+  });
+
   it("shows the brief, the chain with done nodes collapsed, a log preview and the pair", async () => {
     mount(item("running"));
     expect(await screen.findByRole("heading", { level: 1, name: "Design the cache" })).toBeInTheDocument();
@@ -98,11 +105,15 @@ describe("the item screen (C)", () => {
     expect(calls.some((c) => c.path.startsWith("/work-items/w1/compare"))).toBe(false);
   });
 
-  // R12b-11: an archived item's worktree is gone, and the compare's 404 went to the console on every load.
-  it("asks for no diff once the worktree is gone", async () => {
-    const calls = mount(item("archived", null, { status: "completed", worktree_exists: false }), "/work-items/w1");
+  // R12b-11: an archived item's worktree is gone, and the compare's 404 went to the console on every load. A joined
+  // slice still asks: the server reads its commits on its parent's branch.
+  it.each([
+    ["an item", {}, false],
+    ["a slice", { parent_id: "p1" }, true],
+  ])("asks for %s's diff once its worktree is gone", async (_, more, asks) => {
+    const calls = mount(item("archived", null, { status: "completed", worktree_exists: false, ...more }), "/work-items/w1");
     expect(await screen.findByRole("heading", { level: 1 })).toBeInTheDocument();
-    expect(calls.some((c) => c.path.startsWith("/work-items/w1/compare"))).toBe(false);
+    await waitFor(() => expect(calls.some((c) => c.path.startsWith("/work-items/w1/compare"))).toBe(asks));
   });
 
   describe("Start with a draft (R9b-01 on the phone)", () => {
