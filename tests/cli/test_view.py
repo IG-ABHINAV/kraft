@@ -8,20 +8,30 @@ import re
 
 import pytest
 
-from kraft import cli, render
+from kraft import cli, client, render
 from kraft.cli import view
 from kraft.vocab import WorkItemStatus
 
 
-def test_the_list_filter_offers_exactly_the_work_item_statuses():
-    assert view.STATUSES == tuple(s.value for s in WorkItemStatus)
+def test_the_list_filter_offers_the_stored_then_the_display_only_statuses():
+    stored = tuple(s.value for s in WorkItemStatus)
+    display_only = ("done", "cancelled", "running", "needs_you", "escalated", "failed")
+    assert view.STATUSES == (*stored, *display_only)
 
 
-def test_list_refuses_a_status_typo_instead_of_showing_an_empty_board(capsys):
+@pytest.mark.parametrize(
+    "word",
+    [
+        pytest.param("needs-human", id="a-typo"),
+        # The board leaves archived items off, so it could only ever match nothing.
+        pytest.param("archived", id="archived-is-never-on-the-board"),
+    ],
+)
+def test_list_refuses_a_status_typo_instead_of_showing_an_empty_board(capsys, word):
     with pytest.raises(SystemExit) as caught:
-        cli.main(["view", "list", "--status", "needs-human"])
+        cli.main(["view", "list", "--status", word])
     assert caught.value.code == 2
-    assert "invalid choice: 'needs-human'" in capsys.readouterr().err
+    assert f"invalid choice: '{word}'" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -519,6 +529,13 @@ def _board_with_a_parent():
             id="a-matching-parent-keeps-every-child",
         ),
         pytest.param("paused", [(False, "w2", "paused")], [("w2", [])], id="no-child-matches"),
+        # What the STATUS column prints, pasted back: a display-only word, with its space.
+        pytest.param(
+            "needs you",
+            [(False, "p1", "needs you"), (True, "c1", "done"), (True, "c2", "needs you")],
+            [("p1", ["c1", "c2"])],
+            id="a-display-word-as-the-column-prints-it",
+        ),
     ],
 )  # fmt: skip
 def test_list_shows_a_parents_children_under_it(monkeypatch, capsys, status, rows, listed):
@@ -568,3 +585,22 @@ def test_list_paints_running_blue_and_an_old_servers_row_not_at_all(monkeypatch,
     out = _list_board(monkeypatch, capsys, rows)
     assert "\033[34mrunning\033[0m" in out
     assert "\033[32m" not in out
+
+
+@pytest.mark.parametrize(
+    ("row", "line"),
+    [
+        pytest.param(
+            {"status": "needs_human", "display_status": "needs_you"},
+            "display_status  needs you",
+            id="needs-you-with-a-space",
+        ),
+        # An older server sends none: no line, and no KeyError.
+        pytest.param({"status": "active"}, None, id="an-older-server-sends-none"),
+    ],
+)
+def test_show_prints_the_display_status_as_the_list_does(row, line):
+    item = {**row, "id": "w1", "current_node_id": None, "chain_definition": {"nodes": []}}
+    out = render.strip_ansi(view._render_show(client.trim_work_item(item)))
+    shown = [re.sub(r" {2,}", "  ", text) for text in out.splitlines()]
+    assert [t for t in shown if t.startswith("display_status")] == ([line] if line else [])
