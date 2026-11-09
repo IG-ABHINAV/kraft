@@ -4,7 +4,7 @@ Imports only pydantic, so the client starts light."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 LINE_LIMIT = 8 * 1024 * 1024  # = wire.LINE_LIMIT, which takes it from here
 
@@ -33,3 +33,21 @@ class LaunchSpec(BaseModel):
     #: here (Kraft's idle timeout is its bound).
     handshake_timeout_s: float = 120.0
     line_limit: int = LINE_LIMIT
+    harness_id: str = ""
+    #: `asks_everything.env`: set for the agent only, over the client's own environment.
+    agent_env: dict[str, str] = {}
+    asks_config: dict[str, str] = {}  # `asks_everything.config`: option id -> value
+    asks_mode: str | None = None  # `asks_everything.mode`
+    tool_names: dict[str, list[str]] = {}  # the entry's ACP name/kind -> Kraft tool names
+    always_deny: list[str] = []
+    deny_tools: list[str] = []  # the task's own deny list: only to name the limit in a stop
+    settles_itself: list[str] = []
+    policy: bool = False  # the launch holds a limit: allowlist, deny list or always_deny
+    allowlist: bool = False  # ... and that includes an allowlist (even an empty one)
+    #: Seconds between `heartbeat` log lines while an ask waits on the gate, so `idle_s` never
+    #: fires.
+    heartbeat_s: float = Field(60.0, gt=0)  # 0 would busy-loop
+    #: How many times, per launch, the client sends another `session/prompt` after the agent ends
+    #: its turn `cancelled` right after a rejected ask (OpenCode does; spec §10). Past it the
+    #: launch ends as a failure naming the tool and the limit.
+    max_continuations: int = Field(3, ge=0)

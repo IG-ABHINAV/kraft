@@ -589,7 +589,15 @@ def _resolve_status(
         # The ACP client's own failures that are a config problem (an executable it cannot
         # start, an option the agent refused): `config_error` is not a result-file status, so
         # the client logs the event and this is where it becomes the session's status.
-        if reader == "acp" and status == "failed" and _acp_log.config_error(log_path) is not None:
+        # A policy violation (the agent ran a tool the task's policy does not allow) is one too,
+        # whatever the agent wrote: not in ADVANCING, so the artifact check below returns it as is.
+        # So is the agent's turn ending, again and again, after Kraft rejected a tool.
+        if reader == "acp" and (
+            _acp_log.policy_violation(log_path) is not None
+            or _acp_log.rejection_limit(log_path) is not None
+        ):
+            status = "config_error"
+        elif reader == "acp" and status == "failed" and _acp_log.config_error(log_path) is not None:
             status = "config_error"
         # Only a *claim of success* is held to the artifact. A worker that
         # stopped to ask a question wrote nothing precisely because it
@@ -1225,6 +1233,7 @@ async def _run_agent_task(
             permission_mode=permission_mode,
             sandbox=sandbox,
             runner=runner,
+            grants=grants,
         )
     ):
         raise LaunchRefused(why)
@@ -1306,11 +1315,16 @@ async def _run_agent_task(
         )
         if v
     }
+    if h.kind == "acp":
+        # An ACP launch's tool policy is the client's, not a capability flag: otherwise the
+        # capability check below refuses `deny_tools`/`allowed_tools` (`capabilities_for`
+        # declares neither).
+        options = {k: v for k, v in options.items() if k in ("model", "effort")}
     # A harness whose hook holds the tool lists needs no restriction flag, nor
     # does one whose own permission config is written with them.
     hooked = h.permission_hook is not None
     ruled = h.permission_rules is not None
-    if allowed_tools is not None and not hooked and not ruled:
+    if allowed_tools is not None and not hooked and not ruled and h.kind != "acp":
         options |= _restricted(h, harness, allowed_tools, permission_mode)
     # Loading the library and `harnesses.yaml` checks that a task's or a
     # profile's own options name capabilities its harness declares -- but
@@ -1569,6 +1583,8 @@ async def _run_agent_task(
             resume=resume_session_id,
             model=model,
             effort=effort,
+            allowed_tools=allowed_tools,
+            deny_tools=deny_tools,
         )
     else:
         cmd = _harness.build_argv(
