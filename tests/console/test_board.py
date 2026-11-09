@@ -106,16 +106,32 @@ def test_the_board_draws_the_webs_groups_in_a_fixed_grid(board, size, repo, line
         (_row("p", "paused"), "$kraft-muted"),
         (FAILED, "$error"),
         (RUNNING, "$kraft-info"),
-        (_row("q", "queued", current_node_id=None), "$kraft-info"),
+        (_row("q", "queued", current_node_id=None), "$kraft-muted"),
+        (_row("w", "waiting"), "$kraft-muted"),
+        (_row("b", "blocked"), "$kraft-muted"),
+        (_row("e", "escalated"), "$warning"),
         (FILED, "$kraft-faint"),
         (DONE, "$success"),
         (_row("c", "cancelled"), "$kraft-faint"),
     ],
-    ids=["gate", "paused-mid-chain", "failed", "running", "queued", "filed", "done", "cancelled"],
+    ids=[
+        "gate",
+        "paused-mid-chain",
+        "failed",
+        "running",
+        "queued",
+        "waiting",
+        "blocked-mid-chain",
+        "escalated",
+        "filed",
+        "done",
+        "cancelled",
+    ],
 )
 def test_amber_marks_only_what_needs_you(row, bar):
     """Spec §5.2: each colour one job. A failure is bad, not amber; what
-    waits on a person and nothing else is amber."""
+    waits on a person (an escalation among it) and nothing else is amber;
+    blue is work happening now, so what waits on nothing runs neutral."""
     assert board_view.bar_of(row) == bar
 
 
@@ -351,6 +367,24 @@ def test_the_chain_line_is_a_window_around_where_the_item_stands(at, states, wid
         for k, m in enumerate(SEVEN)
     ]
     assert board_view.chain_line(marks, width).plain == line
+
+
+@pytest.mark.parametrize(
+    ("row", "node", "style"),
+    [
+        (RUNNING, "implement ●", "bold $kraft-info"),
+        (_row("w", "waiting"), "implement ●", "bold $foreground"),
+        (GATE, "spec_approval ●", "bold $warning"),
+        (_row("f", "failed"), "implement ●", "bold $error"),
+    ],
+    ids=["running", "waits-on-nobody", "needs-you", "failed"],
+)
+def test_where_the_item_stands_is_blue_while_it_runs_and_amber_when_it_needs_you(row, node, style):
+    """The cursor row's chain: the place's colour says what the item is doing
+    (a failure is red, not amber), never the accent, which is the cursor's.
+    (Lit, it is drawn on that colour.)"""
+    line = board_view.detail_line(row, 120)
+    assert [str(s.style) for s in line.spans if line.plain[s.start : s.end] == node] == [style]
 
 
 BLOCKED = _row("b1b1b1b1", "blocked", current_node_id=None)

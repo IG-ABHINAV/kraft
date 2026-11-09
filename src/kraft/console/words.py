@@ -232,6 +232,13 @@ def _tail(row: dict, stop: dict, node: str, now: float) -> str:
             return ""
 
 
+def is_hot(row: dict) -> bool:
+    """Whether the node the item stands on needs you: amber. A paused item
+    waits on nobody; an escalated one is a stop that needed a person."""
+    status = row.get("display_status")
+    return (group_of(row) == "needs" and status != "paused") or status == "escalated"
+
+
 def chain_marks(row: dict) -> list[dict]:
     """`chainMarks`: each node of the item's chain, done, the one it stands
     on (`hot` when it needs you), or still to run; gates marked."""
@@ -248,9 +255,7 @@ def chain_marks(row: dict) -> list[dict]:
         ),
         -1,
     )
-    # A paused item waits on nobody: it stands on its node, not hot.
-    status = row.get("display_status")
-    hot = (group_of(row) == "needs" and status != "paused") or status == "escalated"
+    hot = is_hot(row)
 
     def state(k: int) -> str:
         if ended or 0 <= at and k < at:

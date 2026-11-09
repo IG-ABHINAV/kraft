@@ -1,15 +1,19 @@
-"""Life where work runs: Claude Code's spinner beside running work, how long
-its session has run, and the one clock that moves them all.
+"""Life where work runs: a spinner beside running work, a small running mark
+that breathes, how long its session has run, and the one clock that moves
+them all.
 
-Motion is only ever for work that is happening: an item whose agent (or an
-escalation turn) is at work. Nothing else spins, and nothing is staged."""
+Motion is only ever for work that is happening: an item whose agent is at work,
+or a session that runs. Nothing else moves, and nothing is staged. An escalated
+item is a stop that needed a person: amber, and still, as on the web."""
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 
 from textual.app import App
+from textual.color import Color
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.dom import DOMNode
@@ -23,7 +27,11 @@ FRAMES = "·✢✳✶✻✽"
 #: Beats a second: the spinner's pace, and how often a clock may move.
 FPS = 8
 #: The display statuses whose work is happening now.
-SPINS = frozenset({"running", "escalated"})
+SPINS = frozenset({"running"})
+#: Beats in one breath of a small running mark: two seconds, as the web's.
+BREATH = 2 * FPS
+#: How far a breath fades the mark toward the ground: the web's dot dims to 35%.
+FADE = 0.65
 
 #: `beat(tick)` draws its frame and says whether it still has running work
 #: on screen; the clock stops once none does.
@@ -37,6 +45,20 @@ def spins(row: dict | None) -> bool:
 
 def frame(tick: int) -> str:
     return FRAMES[tick % len(FRAMES)]
+
+
+def breathes(app: App) -> bool:
+    """Whether the terminal can draw a breath: a fade needs every shade of
+    truecolor. With NO_COLOR, or fewer colours (a fade would jump between a
+    few, or vanish), a small running mark is a still `●` in the running colour."""
+    return not app.no_color and app.console.color_system == "truecolor"
+
+
+def breathe(tick: int, colour: str, ground: str) -> str:
+    """A small running mark's colour this beat: `colour` fading toward
+    `ground` and back over a breath, as the web's breathing dot does."""
+    fade = FADE * (1 - math.cos(2 * math.pi * (tick % BREATH) / BREATH)) / 2
+    return Color.parse(colour).blend(Color.parse(ground), fade).hex
 
 
 def started(item: dict) -> float | None:

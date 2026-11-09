@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from support.console_board import GATE, NOW, RUNNING, _detail, _iso, _opened, _serve, _settled
+from textual.color import Color
 
 from kraft import client
 from kraft.console import panels, pulse
@@ -25,12 +26,36 @@ def test_a_working_line_reads_its_time_to_the_second(seconds, took):
 
 @pytest.mark.parametrize(
     ("status", "spins"),
-    [("running", True), ("escalated", True), ("waiting", False), ("queued", False)],
+    [("running", True), ("escalated", False), ("waiting", False), ("queued", False)],
     ids=["running", "escalated", "waiting", "queued"],
 )
 def test_only_work_that_is_happening_spins(status, spins):
-    """A queued or waiting item is in Running, but nothing works on it now."""
+    """A queued or waiting item is in Running, but nothing works on it now;
+    an escalated one is a stop that needed a person, still as on the web."""
     assert pulse.spins({"display_status": status}) is spins
+
+
+@pytest.mark.parametrize(
+    ("tick", "fade"),
+    [(0, 0), (pulse.BREATH // 4, 0.325), (pulse.BREATH // 2, 0.65), (pulse.BREATH, 0)],
+    ids=["full", "fading", "faintest", "full-again"],
+)
+def test_a_small_running_mark_breathes_down_to_a_third_and_back(tick, fade):
+    """The web's breathing dot: full, dimmed to 35% halfway through a
+    two-second breath, full again."""
+    blue, ground = Color.parse("#80bdfc"), Color.parse("#20202b")
+    assert pulse.breathe(tick, blue.hex, ground.hex) == blue.blend(ground, fade).hex
+
+
+@pytest.mark.parametrize(
+    ("no_color", "system", "breathes"),
+    [(False, "truecolor", True), (False, "256", False), (True, "truecolor", False)],
+    ids=["truecolor", "256-colours", "no-color"],
+)
+def test_only_a_truecolor_terminal_draws_a_breath(no_color, system, breathes):
+    """A fade needs every shade: with fewer, or NO_COLOR, a small running mark is still."""
+    app = SimpleNamespace(no_color=no_color, console=SimpleNamespace(color_system=system))
+    assert pulse.breathes(app) is breathes
 
 
 class Recorded:

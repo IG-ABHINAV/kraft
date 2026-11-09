@@ -6,7 +6,17 @@ from __future__ import annotations
 import json
 
 import pytest
-from support.console_board import GATE, _detail, _event, _iso, _opened, _row, _serve, _serve_events
+from support.console_board import (
+    GATE,
+    NOW,
+    _detail,
+    _event,
+    _iso,
+    _opened,
+    _row,
+    _serve,
+    _serve_events,
+)
 from support.console_chain import (
     FROZEN,
     ID,
@@ -16,11 +26,12 @@ from support.console_chain import (
     _flow,
     _rejected,
     _run,
+    _running,
     _session,
     _words,
 )
 
-from kraft.console import chain
+from kraft.console import chain, pulse
 
 
 @pytest.mark.parametrize(
@@ -39,7 +50,7 @@ from kraft.console import chain
         (
             _detail(_row(ID, "running", current_node_id="plan")),
             [],
-            ["✓ spec", "✓ approve spec (gate)", "▸ ● plan", "· implement"],
+            ["✓ spec", "✓ approve spec (gate)", "▸ * plan", "· implement"],
         ),
         (
             _detail(
@@ -56,7 +67,7 @@ from kraft.console import chain
         (
             _detail(_row(ID, "running", current_node_id="plan")),
             [_event(4, "node_skipped", 30, node="spec_approval")],
-            ["✓ spec", "↷ approve spec (gate)", "▸ ● plan", "· implement"],
+            ["✓ spec", "↷ approve spec (gate)", "▸ * plan", "· implement"],
         ),
         (
             _detail(_row(ID, "cancelled", current_node_id="plan")),
@@ -66,7 +77,7 @@ from kraft.console import chain
         (
             _detail(_row(ID, "running", current_node_id="plan")),
             [_event(4, "node_skipped", 30, node="implement")],
-            ["✓ spec", "✓ approve spec (gate)", "▸ ● plan", "· implement"],
+            ["✓ spec", "✓ approve spec (gate)", "▸ * plan", "· implement"],
         ),
         (
             _done(worker_sessions=[_session("implement", "author", 1, 5, cost_usd=None)]),
@@ -98,7 +109,7 @@ def test_a_node_id_is_drawn_as_typed(board, monkeypatch):
         ID, "running", current_node_id="a[/]b", chain_definition={"nodes": [{"id": "a[/]b"}]}
     )
     lines, _ = _run(board, monkeypatch, _detail(row))
-    assert lines == ["▸ ● a[/]b"]
+    assert lines == ["▸ * a[/]b"]
 
 
 @pytest.mark.parametrize(
@@ -191,7 +202,7 @@ def test_enter_opens_a_node_and_left_or_escape_close_it_before_the_tabs_move(boa
             [
                 "done",
                 "pass 2 of 2 after changes were requested at approve final review: too [/] vague",
-                "▸ author · attempt 1 · * running · 10m 0s",
+                "▸ author · attempt 1 · ● running · 10m 0s",
                 "pass 1 of 2",
                 "author · attempt 2 · done · 1m",
                 "author · attempt 1 · done · 1m · $0.500",
@@ -449,7 +460,7 @@ def test_a_live_read_redraws_the_open_node(board, monkeypatch):
         )
         return first
 
-    assert console.run(scenario) == ["▸ author · attempt 1 · * running · 5m 0s"]
+    assert console.run(scenario) == ["▸ author · attempt 1 · ● running · 5m 0s"]
 
 
 def test_the_keys_dialog_lists_the_chain_tabs_keys_only_there(board, monkeypatch):
@@ -498,3 +509,70 @@ def test_the_keys_dialog_lists_the_chain_tabs_keys_only_there(board, monkeypatch
 )
 def test_the_implementing_node_is_the_first_with_an_agent_task_of_no_skill(item, expect):
     assert chain.implementing_node(item) == expect
+
+
+#: The look's colours, as the app hands them to the tab.
+COLOUR = {
+    "kraft-muted": "#8a8a99",
+    "kraft-info": "#80bdfc",
+    "background": "#20202b",
+    "warning": "#deb866",
+    "error": "#f07070",
+    "surface": "#2e2e39",
+    "kraft-accent": "#b0adfc",
+}
+
+
+@pytest.mark.parametrize(
+    ("status", "fields", "mark", "style"),
+    [
+        ("running", {}, pulse.frame(3), "bold #80bdfc"),
+        ("needs_you", {"pending_gate": "plan"}, "●", "bold #deb866"),
+        ("escalated", {}, "●", "bold #deb866"),
+        ("waiting", {}, "●", "bold"),
+    ],
+    ids=["running-spins-blue", "needs-you-amber", "escalated-amber", "waiting-plain"],
+)
+def test_the_node_the_item_stands_on_says_what_it_is_doing(status, fields, mark, style):
+    """Blue and spinning while it runs, amber when it needs you, plain when it
+    waits on nobody: never the accent, which is the cursor's alone."""
+    item = _detail(_row(ID, status, current_node_id="plan", **fields))
+    lines, _, _ = chain.chain_lines(item, [], (0, False, 0), 60, (NOW, 3), COLOUR)
+    row = next(line for line in lines if line.plain.split()[-1] == "plan")
+    assert (row.plain.split()[0], str(row.style)) == (mark, style)
+
+
+@pytest.mark.parametrize(
+    ("status", "width", "still", "task_breathes"),
+    [
+        ("running", 80, False, True),
+        ("paused", 80, False, False),
+        ("running", 25, False, True),
+        ("running", 80, True, True),
+    ],
+    ids=["running", "paused", "narrow-pane-wraps-the-session-line", "cannot-fade-is-still"],
+)
+def test_a_running_mark_breathes_where_work_is_happening(status, width, still, task_breathes):
+    """The plan task being worked on breathes while its item runs; a running
+    session's mark breathes while it runs, on whichever line it wrapped to. A
+    terminal that cannot fade draws both marks a steady blue."""
+    tasks = [{"n": 1, "title": "Draw it", "state": "current"}]
+    item = _flow(_running(), progress={"tasks": tasks}) | {"display_status": status}
+    tick = pulse.BREATH // 2
+    lines, _, _ = chain.chain_lines(
+        item, [], (3, True, -1), width, (NOW, tick), COLOUR, still=still
+    )
+
+    def mark(word: str) -> list[str]:
+        at = next(k for k, line in enumerate(lines) if word in line.plain)
+        # Its own lines only: a narrow pane wraps a session line once.
+        line = next(line for line in lines[at : at + 2] if "●" in line.plain)
+        at = line.plain.index("●")
+        return [str(s.style) for s in line.spans if (s.start, s.end) == (at, at + 1)]
+
+    breath = (
+        COLOUR["kraft-info"]
+        if still
+        else pulse.breathe(tick, COLOUR["kraft-info"], COLOUR["background"])
+    )
+    assert (mark("Draw it"), mark("attempt")) == ([breath] if task_breathes else [], [breath])

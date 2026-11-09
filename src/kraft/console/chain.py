@@ -12,7 +12,7 @@ from rich.text import Text
 
 from kraft.console import pulse, words
 
-#: A node's mark by its state.
+#: A node's mark by its state; a running item's current node spins instead.
 #: A cancelled node has no mark, as on the web's chain: it says "cancelled".
 MARKS = {"done": "✓", "current": "●", "failed": "✗", "todo": "·", "skipped": "↷", "cancelled": " "}
 #: What the open node says of its state when it is not the one the item waits on.
@@ -107,12 +107,16 @@ def _spent(item: dict, node_id: str) -> str:
     return " · ".join(part for part in (money, took) if part)
 
 
+def _runs(session: dict) -> bool:
+    return session.get("status") == "running" and session.get("exited_at") is None
+
+
 def _session_line(session: dict, clock: tuple[float, int]) -> str:
     """`task · attempt N · status · time · cost`, what the server gave. A
-    running session shows the spinner's frame and the time so far, as the
-    working line does."""
-    now, tick = clock
-    running = session.get("status") == "running" and session.get("exited_at") is None
+    running session shows its mark (`●`, which breathes) and the time so far,
+    as the working line does."""
+    now, _ = clock
+    running = _runs(session)
     started = words._seconds(session.get("started_at"))
     wall = session.get("wall_ms")
     took = words.elapsed(wall / 1000) if wall else ""
@@ -125,7 +129,7 @@ def _session_line(session: dict, clock: tuple[float, int]) -> str:
     parts = [
         words.task_name(session.get("hook_point") or "") or "session",
         f"attempt {session['attempt']}" if session.get("attempt") is not None else "",
-        f"{pulse.frame(tick)} {status}" if running else status,
+        f"● {status}" if running else status,
         took,
         ("~" if session.get("cost_estimated") else "") + words.usd(cost) if cost else "",
     ]
@@ -224,20 +228,32 @@ def _state_line(item: dict, node_id: str, state: str, is_gate: bool) -> str:
     return STATE_WORDS[state]
 
 
-def node_detail(item, events, k, state, at, clock, colour, width=80) -> tuple[list[Text], int]:
+def node_detail(
+    item, events, k, state, at, clock, colour, width=80, *, still=False
+) -> tuple[list[Text], int]:
     """The open node `k`'s lines, indented under its row, and which of them
-    the session cursor `at` sits on (-1: none)."""
+    the session cursor `at` sits on (-1: none). `still`: a terminal that
+    cannot fade (`pulse.breathes`) draws a small running mark steady."""
     nodes = words.nodes_of(item) or []
     node = nodes[k]
     node_id, muted = node["id"], colour["kraft-muted"]
     out: list[Text] = []
+    # A small running mark's colour this beat (`pulse.breathe`).
+    info = colour["kraft-info"]
+    breath = info if still else pulse.breathe(clock[1], info, colour["background"])
 
-    def add(text: str, style: str = "") -> None:
-        # A long line wraps under its own start, not at the pane's edge.
+    def add(text: str, style: str = "", mark: str = "") -> None:
+        """`text` wrapped under its own start, not at the pane's edge; with
+        `mark`, its first `●` drawn in that style, on whichever line it wrapped to."""
+        start = len(out)
         for line in textwrap.wrap(
             text.strip() and INDENT + text, max(width, 20), subsequent_indent=INDENT + "  "
         ) or [INDENT]:
             out.append(Text(line, style=style))
+        for line in out[start:] if mark else ():
+            if (at := line.plain.find("●")) >= 0:
+                line.stylize(mark, at, at + 1)
+                break
 
     passes = (item.get("node_passes") or {}).get(node_id) or []
     add(_state_line(item, node_id, state, node.get("kind") == "gate"), "bold")
@@ -263,6 +279,7 @@ def node_detail(item, events, k, state, at, clock, colour, width=80) -> tuple[li
         add(
             f"{CURSOR if lit else ' '} {_session_line(session, clock)}",
             f"bold {colour['kraft-accent']}" if lit else "",
+            breath if _runs(session) else "",
         )
     if node.get("kind") == "gate":
         decided = _decisions(node_id, events, clock[0])
@@ -275,23 +292,33 @@ def node_detail(item, events, k, state, at, clock, colour, width=80) -> tuple[li
         done = sum(t.get("state") == "done" for t in tasks)
         out += [Text(""), Text(INDENT + f"Plan tasks · {done} of {len(tasks)} done", style=muted)]
         for t in tasks:
-            state_mark, style = {
-                "done": ("✓", muted),
-                "current": ("●", f"bold {colour['kraft-accent']}"),
-            }.get(t.get("state"), ("·", ""))
+            state_mark, style = {"done": ("✓", muted), "current": ("●", "bold")}.get(
+                t.get("state"), ("·", "")
+            )
             sha = f"  {t['sha']}" if t.get("sha") else ""
             late = "  not started" if t.get("state") == "pending" else ""
-            add(f"  {state_mark} {t.get('n')}. {t.get('title') or ''}{sha}{late}", style)
+            # The task being worked on now breathes; one whose item has stopped is still.
+            now_on = t.get("state") == "current" and pulse.spins(item)
+            add(
+                f"  {state_mark} {t.get('n')}. {t.get('title') or ''}{sha}{late}",
+                style,
+                breath if now_on else "",
+            )
     return out, cursor_line
 
 
-def chain_lines(item, events, place, width, clock, colour):
+def chain_lines(item, events, place, width, clock, colour, *, still=False):
     """The tab's lines: a row per node, the open node's detail under its row.
     `place` is `(cursor, opened, session under it)`, `clock` `(now, tick)`.
     Returns `(lines, line the cursor is on, first line of the open node)`."""
     cursor, opened, session_at = place
     nodes = words.nodes_of(item) or []
     states = node_states(item, events)
+    # Where the item stands: blue and spinning while it runs, amber when it
+    # needs you, plain when it waits on nobody. The accent is the cursor's alone.
+    running = pulse.spins(item)
+    here = f"bold {colour['kraft-info']}" if running else "bold"
+    here = f"bold {colour['warning']}" if words.is_hot(item) else here
     out: list[Text] = []
     on = top = 0
     for k, node in enumerate(nodes):
@@ -304,9 +331,10 @@ def chain_lines(item, events, place, width, clock, colour):
         room = width - 5 - (len(right) + 2 if right else 0)
         if len(name) > room:  # a row stays one line, so the cursor's line is known
             name = name[: max(room - 1, 1)] + "…"
-        left = f" {CURSOR if lit else ' '} {MARKS[state]} {name}"
+        mark = pulse.frame(clock[1]) if state == "current" and running else MARKS[state]
+        left = f" {CURSOR if lit else ' '} {mark} {name}"
         pad = max(2, width - len(left) - len(right) - 1) if right else 0
-        style = {"current": f"bold {colour['kraft-accent']}", "failed": colour["error"]}.get(state)
+        style = {"current": here, "failed": colour["error"]}.get(state)
         style = style or (colour["kraft-muted"] if state in ("done", "skipped") else "")
         if lit:
             style = f"bold {style}".strip() + f" on {colour['surface']}"
@@ -316,7 +344,9 @@ def chain_lines(item, events, place, width, clock, colour):
             on = top = len(out)
         out.append(row)
         if lit and opened:
-            lines, at = node_detail(item, events, k, state, session_at, clock, colour, width)
+            lines, at = node_detail(
+                item, events, k, state, session_at, clock, colour, width, still=still
+            )
             on = top + 1 + at if at >= 0 else top
             out += lines
     return out, on, top

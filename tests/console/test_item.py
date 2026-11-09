@@ -66,7 +66,7 @@ async def _read_done(console, app, pilot) -> None:
 
 
 @pytest.mark.parametrize(
-    ("row", "title", "status", "banner", "tone", "spent", "where", "chain"),
+    ("row", "title", "status", "banner", "tone", "spent", "where", "chain", "place"),
     [
         (
             GATE,
@@ -77,6 +77,7 @@ async def _read_done(console, app, pilot) -> None:
             "12m",
             "r · default",
             "spec → spec_approval ● → plan → implement",
+            "bold $warning",
         ),
         (
             OVER_BUDGET,
@@ -87,6 +88,7 @@ async def _read_done(console, app, pilot) -> None:
             "$5.10 of $5.00 · 1h",
             "r · default",
             "spec → spec_approval → plan → implement ●",
+            "bold $warning",
         ),
         (
             RUNNING,
@@ -97,6 +99,7 @@ async def _read_done(console, app, pilot) -> None:
             "4m",
             "r · docs",
             "spec → spec_approval → plan → implement ●",
+            "bold $kraft-info",
         ),
         (
             FAILED,
@@ -107,6 +110,7 @@ async def _read_done(console, app, pilot) -> None:
             "1h",
             "r · default",
             "spec → spec_approval → plan → implement",
+            None,
         ),
         (
             STUCK,
@@ -117,6 +121,7 @@ async def _read_done(console, app, pilot) -> None:
             "5m",
             "r · default",
             "spec → spec_approval → plan → implement",
+            None,
         ),
         (
             # Nothing to say but that it stopped: the frame still says that much.
@@ -128,6 +133,7 @@ async def _read_done(console, app, pilot) -> None:
             "5m",
             "r · default",
             "spec → spec_approval → plan → implement",
+            None,
         ),
         (
             FILED,
@@ -138,6 +144,43 @@ async def _read_done(console, app, pilot) -> None:
             "30m",
             "r · default",
             "spec → spec_approval → plan → implement",
+            None,
+        ),
+        (
+            # A failure is red where it stands too, not amber.
+            FAILED | {"current_node_id": "implement"},
+            "Board › m03d77b1  item m03d77b1",
+            "● Failed · failed at verification",
+            "▌ Failed at verification. Tests failed: 3 of 120.",
+            "$error",
+            "1h",
+            "r · default",
+            "spec → spec_approval → plan → implement ●",
+            "bold $error",
+        ),
+        (
+            # A stop that needed a person: amber, and still (no working line).
+            RUNNING | {"display_status": "escalated"},
+            "Board › k7f2e9a0  Docs per major",
+            "● Escalated · escalation running",
+            None,
+            None,
+            "4m",
+            "r · docs",
+            "spec → spec_approval → plan → implement ●",
+            "bold $warning",
+        ),
+        (
+            # Nothing runs: where it stands is plain, neither blue nor amber.
+            RUNNING | {"display_status": "waiting"},
+            "Board › k7f2e9a0  Docs per major",
+            "● Waiting · waiting at implement",
+            None,
+            None,
+            "4m",
+            "r · docs",
+            "spec → spec_approval → plan → implement ●",
+            "bold $foreground",
         ),
     ],
     ids=[
@@ -148,15 +191,19 @@ async def _read_done(console, app, pilot) -> None:
         "stuck",
         "stopped-saying-nothing",
         "not-started",
+        "failed-on-a-node",
+        "escalated",
+        "waiting",
     ],
 )
 def test_the_header_says_where_the_item_stands(
-    board, monkeypatch, row, title, status, banner, tone, spent, where, chain
+    board, monkeypatch, row, title, status, banner, tone, spent, where, chain, place
 ):
     """Spec §7.2: id and title, status in the web's words with the reason, the
     banner with the server's reason and the way on only when stopped (amber
     when it needs you, red when it failed), `[/]` drawn as typed; spend, age,
-    repo and chain; and the chain's window, the item's place in the accent."""
+    repo and chain; and the chain's window, the item's place blue while it
+    runs, amber when it needs you, plain when it waits on nobody."""
     _serve(monkeypatch, _detail(row), calls=[])
     console = board([row])
 
@@ -185,7 +232,7 @@ def test_the_header_says_where_the_item_stands(
         spent,
         where,
         chain,
-        "bold $kraft-accent" if "●" in chain else None,
+        place,
     )
 
 

@@ -69,12 +69,17 @@ def _is_item(option_id: str | None) -> bool:
 
 def bar_of(row: dict) -> str:
     """The row's state colour (spec §5.2): failed is bad, cancelled faint,
-    paused mid-chain neutral as on the web (it waits on nobody), the rest
-    their group's."""
+    escalated amber (a stop that needed a person), waiting, queued, and
+    paused or blocked mid-chain neutral as on the web (nothing runs), the
+    rest their group's: blue in Running is work happening now."""
     status = row.get("display_status")
     if status == "failed":
         return "$error"
-    if status == "paused" and row.get("current_node_id"):
+    if status == "escalated":
+        return "$warning"
+    if status in ("waiting", "queued") or (
+        status in ("paused", "blocked") and row.get("current_node_id")
+    ):
         return "$kraft-muted"
     if status == "cancelled":
         return "$kraft-faint"
@@ -125,8 +130,19 @@ def detail_line(row: dict, width: int) -> Content:
     (the default named too) and where it stands on it."""
     head = chips(os.path.basename(row.get("repo", "").rstrip("/")), words.chain_of(row))
     lead = Content.assemble(" " * DETAIL_INDENT, head, (" · ", "$kraft-faint"))
-    marks = chain_line(words.chain_marks(row), max(width - lead.cell_length, 1))
+    room = max(width - lead.cell_length, 1)
+    marks = chain_line(words.chain_marks(row), room, tone=place_tone(row))
     return Content.assemble(lead, marks).truncate(width, ellipsis=True)
+
+
+def place_tone(row: dict) -> str:
+    """The colour of where the item stands on its chain: blue while it runs,
+    red when it failed, amber when it needs you, plain when it waits on nobody."""
+    if pulse.spins(row):
+        return "$kraft-info"
+    if row.get("display_status") == "failed":
+        return "$error"
+    return "$warning" if words.is_hot(row) else "$foreground"
 
 
 def heading(key: str, label: str, members: list[dict], folded: bool) -> Content:
@@ -140,11 +156,14 @@ def heading(key: str, label: str, members: list[dict], folded: bool) -> Content:
     )
 
 
-def chain_line(marks: list[dict], width: int, *, lit: bool = False) -> Content:
+def chain_line(
+    marks: list[dict], width: int, *, lit: bool = False, tone: str | None = None
+) -> Content:
     """The chain as a window around where the item stands (spec §6): what fits
     on either side, `+N …` and `… +N` counting what is hidden. An ended chain
-    shows its end, one not started its start. The item's place is `●` in the
-    accent (spec §5.2), on it when `lit` (just moved there); done nodes are faint."""
+    shows its end, one not started its start. The item's place is `●` in
+    `tone` (`place_tone`), or without one amber when it needs you and plain
+    otherwise; on its colour when `lit` (just moved there). Done nodes are faint."""
     if not marks:
         return Content("")
     names = [m["node"] + (" ●" if m["state"] in ("current", "hot") else "") for m in marks]
@@ -168,8 +187,12 @@ def chain_line(marks: list[dict], width: int, *, lit: bool = False) -> Content:
             hi, grown = hi + 1, True
         if lo > 0 and size(lo - 1, hi) <= width:
             lo, grown = lo - 1, True
-    here = "bold $background on $kraft-accent" if lit else "bold $kraft-accent"
-    style = {"done": "$kraft-faint", "current": here, "hot": here, "todo": ""}
+
+    def here(tone: str) -> str:
+        return f"bold $background on {tone}" if lit else f"bold {tone}"
+
+    current, hot = here(tone or "$foreground"), here(tone or "$warning")
+    style = {"done": "$kraft-faint", "current": current, "hot": hot, "todo": ""}
     parts: list[str | tuple[str, str]] = [(f"+{lo} … ", "$kraft-faint")] if lo else []
     for k in range(lo, hi + 1):
         parts += [(" → ", "$kraft-faint")] if k > lo else []

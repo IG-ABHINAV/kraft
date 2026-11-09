@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 
 from textual.widgets import RichLog
 
@@ -100,9 +99,7 @@ def _flow(*sessions, **fields) -> dict:
 
 def _words(app) -> list[str]:
     """The Chain tab's lines, their runs of spaces folded to one."""
-    # The spinner's frame moves with the clock: it reads as `*` here.
-    lines = [" ".join(line.text.split()) for line in app.query_one("#chain", RichLog).lines]
-    return [re.sub(f"[{pulse.FRAMES}] running", "* running", line) for line in lines]
+    return [" ".join(line.text.split()) for line in app.query_one("#chain", RichLog).lines]
 
 
 async def _chain_tab(console, app, pilot) -> None:
@@ -113,7 +110,9 @@ async def _chain_tab(console, app, pilot) -> None:
 
 
 def _run(board, monkeypatch, detail, events=(), keys=(), size=(120, 40)):
-    """The Chain tab of `detail` after `keys`: its lines and the view."""
+    """The Chain tab of `detail` after `keys`: its lines and the view. The
+    spinner's frame moves with the clock: a running node's mark reads `*`."""
+    monkeypatch.setattr(pulse, "FRAMES", "*")
     _serve(monkeypatch, detail, calls=[])
     _serve_events(monkeypatch, list(events))
     console = board([detail])

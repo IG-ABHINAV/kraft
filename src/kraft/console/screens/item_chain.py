@@ -6,7 +6,7 @@ from __future__ import annotations
 from rich.text import Text
 from textual.widgets import RichLog
 
-from kraft.console import chain, words
+from kraft.console import chain, pulse, words
 
 #: The panel edge's hint: the tabs' keys, and while a node is open its own.
 EDGE = "← → tabs"
@@ -44,14 +44,16 @@ class ChainTab:
         self._init_chain()
 
     def _chain_beat(self, tick: int) -> bool:
-        """The clock's beat: an open node's running session ticks."""
-        if not (self._shown("chain") and self._running_in_node()):
+        """The clock's beat: a running item's node spins and its marks
+        breathe; an open node's running session ticks."""
+        if not (self._shown("chain") and self._moves()):
             return False
         self._write_chain()
         return True
 
-    def _running_in_node(self) -> bool:
-        return any(s.get("status") == "running" for s in self._node_sessions())
+    def _moves(self) -> bool:
+        running = any(s.get("status") == "running" for s in self._node_sessions())
+        return running or pulse.spins(self.item)
 
     async def _chain_first(self) -> None:
         """Every event of the item, once: the tab shows (or the item changed)."""
@@ -103,6 +105,7 @@ class ChainTab:
             width,
             (self._now(), self.app.pulse.tick),
             self.app.theme_variables,
+            still=not pulse.breathes(self.app),
         )
         for line in lines:  # at the pane's width: a row is padded to it
             log.write(line, width=width, scroll_end=False)
@@ -117,7 +120,7 @@ class ChainTab:
             log.call_after_refresh(log.scroll_to, y=high, animate=False)
         else:
             log.scroll_to(y=high, animate=False, immediate=True)
-        if self._running_in_node():
+        if self._moves():
             self.app.pulse.wake()
 
     def _node_sessions(self) -> list[dict]:

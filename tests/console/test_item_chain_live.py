@@ -15,8 +15,10 @@ from support.console_chain import (
     _session,
     _words,
 )
+from textual.color import Color
 from textual.widgets import RichLog
 
+from kraft.console import pulse
 from kraft.console.screens import item as item_view
 
 LATER = {"updated_at": "2026-10-16T00:00:00+00:00"}
@@ -223,9 +225,63 @@ def test_a_running_session_in_an_open_node_ticks(board, monkeypatch):
         return before, [line for line in _words(app) if "reviewer" in line]
 
     assert console.run(scenario) == (
-        ["▸ author · attempt 1 · * running · 5m 0s"],
+        ["▸ author · attempt 1 · ● running · 5m 0s"],
         ["reviewer · attempt 1 · done · 1m · $0.500"],
     )
+
+
+def test_a_running_items_node_spins_with_no_node_open(board, monkeypatch):
+    """The clock redraws the tab while the item runs, not only while an open
+    node has a running session: the node it stands on spins."""
+    detail = _detail(_row(ID, "running", current_node_id="plan"))
+    _serve(monkeypatch, detail, calls=[])
+    _serve_events(monkeypatch, [])
+    console = board([detail])
+
+    async def scenario(app, pilot):
+        await _chain_tab(console, app, pilot)
+
+        def mark() -> str:
+            return next(line for line in _words(app) if line.endswith("plan")).split()[-2]
+
+        first = mark()
+        await console.until(pilot, lambda: mark() != first, timeout=5)
+        return first in pulse.FRAMES and mark() in pulse.FRAMES
+
+    assert console.run(scenario) is True
+
+
+@pytest.mark.parametrize(
+    ("env", "breathes"),
+    [({"COLORTERM": "truecolor"}, True), ({"COLORTERM": "truecolor", "NO_COLOR": "1"}, False)],
+    ids=["truecolor", "no-color"],
+)
+def test_the_chain_tab_breathes_only_where_the_terminal_can_fade(board, monkeypatch, env, breathes):
+    """The tab asks the terminal (`pulse.breathes`): with NO_COLOR a running
+    session's mark is drawn a steady blue, beat after beat."""
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(pulse.Pulse, "wake", lambda self: None)  # the beat is set by hand
+    detail = _flow(_running())
+    _serve(monkeypatch, detail, calls=[])
+    _serve_events(monkeypatch, [])
+    console = board([detail])
+
+    async def scenario(app, pilot):
+        await _chain_tab(console, app, pilot)
+        await pilot.press("enter")
+        app.pulse.tick = pulse.BREATH // 2
+        app.view._write_chain()
+        line = next(
+            line for line in app.query_one("#chain", RichLog).lines if "attempt" in line.text
+        )
+        dot = next(segment for segment in line if segment.text == "●")
+        info, ground = app.theme_variables["kraft-info"], app.theme_variables["background"]
+        want = pulse.breathe(app.pulse.tick, info, ground) if breathes else info
+        return dot.style.color.triplet.hex, Color.parse(want).hex.lower()
+
+    seen, want = console.run(scenario)
+    assert seen == want
 
 
 def test_a_hidden_chain_pane_is_not_drawn_into_by_a_live_read(board, monkeypatch):

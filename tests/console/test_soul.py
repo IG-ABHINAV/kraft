@@ -164,8 +164,8 @@ def test_approving_leads_with_the_mark_and_lights_where_the_item_went(board, mon
     assert toasts == ["✓ approved spec_approval on a91c03fe"]
     assert delay == item_view.LIT_S
     assert before is False
-    assert "bold $background on $kraft-accent" in lit
-    assert "bold $background on $kraft-accent" not in after and "bold $kraft-accent" in after
+    assert "bold $background on $kraft-info" in lit
+    assert "bold $background on $kraft-info" not in after and "bold $kraft-info" in after
 
 
 MERGED = RUNNING | {"display_status": "done", "mr_ref": {"number": 42, "url": "u"}}
