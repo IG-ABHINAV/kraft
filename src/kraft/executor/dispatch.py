@@ -2042,6 +2042,8 @@ async def _dispatch_task_in(
             )
             if listed and not sandbox:
                 _fallback.require_on_path(inv, harnesses)
+            if not primary:
+                _fallback.refuse_acp_fallback(inv, harnesses)
         except (_agent.HarnessUnavailable, _fallback.Unavailable) as exc:
             if not listed:
                 why = (
@@ -2112,6 +2114,7 @@ async def _dispatch_task_in(
                     time_cap=time_cap,
                     runner=slot.runner if slot is not None else group_runner or runner,
                     placed_claim=slot.held if slot is not None else None,
+                    budget=budget,
                 )
                 break
             except _remote_launch.PlaceAgain as again:
@@ -2398,6 +2401,7 @@ async def _launch_agent(
     time_cap,
     runner: str | None = None,
     placed_claim=None,
+    budget: _policy.Budget = _policy.NO_BUDGET,
 ) -> tuple[str, bool]:
     """One candidate's launch for `dispatch_node`: `(status, final)`, `final`
     when the launch never started and the status is the task's answer as it
@@ -2481,6 +2485,7 @@ async def _launch_agent(
             command=inv.command,
             harness=inv.harness,
             harnesses=harnesses,
+            budget=budget,
             model=inv.model,
             deny_tools=inv.deny_tools,
             effort=inv.effort,

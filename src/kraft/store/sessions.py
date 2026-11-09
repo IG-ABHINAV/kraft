@@ -63,6 +63,8 @@ def create_session(
     repository: str | None = None,
     #: The machine a remote step runs on (`workers.yaml`); None on the server.
     runner: str | None = None,
+    #: Whether the session runs on an ACP agent, recorded as launched (`worker_sessions.acp`).
+    acp: bool = False,
     #: An agent session outside the walk (escalation, review reply, gate
     #: review): refused with `CheckoutBusy` while another in-place item uses
     #: the item's checkout. Checked in this write, so none starts beside it.
@@ -112,11 +114,11 @@ def create_session(
         "INSERT INTO worker_sessions (id, work_item_id, node_id, hook_point, pid, "
         "pid_start_time, log_path, result_path, status, attempt, created_at, exited_at, "
         "round, head_sha, thread, command, started_at, harness, sandbox, model, repository, "
-        "runner) "
+        "runner, acp) "
         "VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, 'pending', "
         "(SELECT COUNT(*) + 1 FROM worker_sessions "
         "WHERE work_item_id = ? AND node_id = ? AND hook_point = ?), "
-        "?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             id,
             work_item_id,
@@ -138,6 +140,7 @@ def create_session(
             model,
             repository,
             runner,
+            int(acp),
         ),
     )
     (attempt,) = conn.execute(
@@ -600,11 +603,13 @@ def _warn_unpriced(
     (Kraft-9efnk.10, option A2); a per-scope `budget_usd` refuses on it
     (`caps.budget_breach`)."""
     row = conn.execute(
-        "SELECT work_item_id, harness FROM worker_sessions WHERE work_item_id = ? AND id = ?",
+        "SELECT work_item_id, harness, acp FROM worker_sessions WHERE work_item_id = ? AND id = ?",
         (work_item_id, session_id),
     ).fetchone()
     if (
         row is None
+        # An ACP session's missing cost is unknown spend the caps refuse on, not $0.
+        or row["acp"]
         or conn.execute(
             "SELECT 1 FROM events WHERE work_item_id = ? AND type = ? LIMIT 1",
             (row["work_item_id"], LimitEvent.SPEND_UNPRICED),

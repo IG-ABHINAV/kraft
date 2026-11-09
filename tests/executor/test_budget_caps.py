@@ -11,7 +11,7 @@ import pydantic
 import pytest
 from support.harness import v1_node
 
-from kraft import events, store, usage
+from kraft import caps, events, store, usage
 from kraft import policy as _policy
 from kraft.caps import DailyBreach, TokenBreach, UsdBreach, WorkItemBreach
 from kraft.executor import stops
@@ -43,14 +43,33 @@ def _chain(level: str | None = None, cap: dict | None = None):
     )
 
 
-async def _spent(it, path: str, *, tokens: int = 0, usd: float | None = None, status="done"):
+async def _spent(
+    it,
+    path: str,
+    *,
+    tokens: int | None = 0,
+    usd: float | None = None,
+    status="done",
+    acp=False,
+):
+    """`tokens=None` leaves the token columns NULL: a session that never reached a prompt.
+    `acp` marks a session that ran on an ACP agent. Its harness (`fake-acp`) is in no harness
+    file: what counts is the flag the session was launched with."""
     sid = f"s-{path}-{tokens}-{usd}-{status}"
     await it.session(sid, path, status if status != "running" else None)
     await it.database.write(
         lambda c: c.execute(
-            "UPDATE worker_sessions SET tokens_in = ?, tokens_out = 0, cost_usd = ?, "
-            "status = ? WHERE id = ?",
-            (tokens, usd, status, sid),
+            "UPDATE worker_sessions SET tokens_in = ?, tokens_out = ?, cost_usd = ?, "
+            "status = ?, harness = ?, acp = ? WHERE id = ?",
+            (
+                tokens,
+                None if tokens is None else 0,
+                usd,
+                status,
+                "fake-acp" if acp else None,
+                int(acp),
+                sid,
+            ),
         )
     )
 
@@ -651,3 +670,100 @@ async def test_a_slice_refused_on_the_family_cap_stops_its_family_at_once(
     assert len(c1.events("work_item_needs_human")) == int(c1_ends == "needs_human")
     assert len(parent.events("work_item_needs_human")) == int(cascades)
     assert (c2.row()["status"] == "paused") is cascades
+
+
+@pytest.mark.parametrize(
+    ("level", "cap", "expect"),
+    [
+        ("task", {"token_budget": 1000}, (True, False)),
+        ("step", {"budget_usd": 5}, (False, True)),
+        ("chain", {"token_budget": 1000, "budget_usd": 5}, (True, True)),
+        (None, None, (False, False)),
+    ],
+    ids=["task-token", "step-usd", "chain-both", "none"],
+)
+async def test_spend_caps_in_effect_reads_every_enclosing_scope(item_on, level, cap, expect):
+    it = await (item_on(_chain(level, cap)) if level else item_on(_chain()))
+    got = it.database.read(
+        lambda c: caps.spend_caps_in_effect(c, it.row(), TASK, _policy.NO_BUDGET)
+    )
+    assert tuple(got) == expect
+
+
+async def test_an_instance_dollar_cap_counts_as_a_dollar_cap(item_on):
+    it = await item_on(_chain())
+    got = it.database.read(
+        lambda c: caps.spend_caps_in_effect(c, it.row(), TASK, _policy.Budget(daily_usd=5))
+    )
+    assert tuple(got) == (False, True)
+
+
+@pytest.mark.parametrize(
+    ("acp", "tokens", "unknown"),
+    [(True, 0, True), (False, 0, False), (True, None, False)],
+    ids=["acp-zero-tokens", "cli-zero-tokens", "acp-never-reached-a-prompt"],
+)
+async def test_an_acp_session_with_no_cost_is_unknown_spend_even_at_zero_tokens(
+    item_on, acp, tokens, unknown
+):
+    it = await _item(item_on, "task", {"budget_usd": 5})
+    await _spent(it, TASK, tokens=tokens, usd=None, acp=acp)
+    got = _breach(it)
+    assert (isinstance(got, UsdBreach) and got.unknown_launches == 1) is unknown
+
+
+async def test_an_acp_sessions_unknown_cost_stops_the_item_dollar_cap_too(item_on):
+    it = await item_on(_chain())
+    await _spent(it, TASK, tokens=0, usd=None, acp=True)
+    got = stops.budget_breach(
+        it.database, it.id, _policy.Budget(work_item_usd=100), row=it.row(), path=TASK
+    )
+    assert isinstance(got, UsdBreach) and got.unknown_launches == 1 and got.cap_usd == 100
+
+
+async def test_a_session_that_never_reached_a_prompt_does_not_make_the_item_unknown(item_on):
+    it = await item_on(_chain())
+    await _spent(it, TASK, tokens=None, usd=None, acp=True)  # config_error, login, kill
+    assert (
+        stops.budget_breach(
+            it.database, it.id, _policy.Budget(work_item_usd=100), row=it.row(), path=TASK
+        )
+        is None
+    )
+
+
+async def test_an_acp_session_that_reported_a_cost_is_ordinary_spend(item_on):
+    it = await item_on(_chain())
+    await _spent(it, TASK, tokens=10, usd=1.0, acp=True)
+    assert (
+        stops.budget_breach(
+            it.database, it.id, _policy.Budget(work_item_usd=100), row=it.row(), path=TASK
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("cap", ["scope", "instance"])
+@pytest.mark.parametrize(
+    ("model", "unknown"),
+    [("claude-sonnet-4-5", 0), (None, 1)],
+    ids=["tokens-on-a-priced-model-are-priced", "tokens-on-no-model-are-unknown"],
+)
+async def test_an_acp_turn_that_reported_tokens_and_no_cost_is_priced_or_unknown_never_free(
+    item_on, model, unknown, cap
+):
+    """Through the real exit writer: a priced model's tokens settle to a cost, so the first turn
+    is not counted unknown and the item stopped after it; tokens on no priced model stay unknown.
+    Neither writes the CLI's `spend_unpriced` warning: an ACP launch is stopped on it instead."""
+    it = await (_item(item_on, "item", {"budget_usd": 5}) if cap == "scope" else item_on(_chain()))
+    await it.session("s", TASK, harness="fake-acp", model=model, acp=True)
+    spent = usage.Usage(tokens_in=1000, tokens_out=500, model=model)  # a turn, no cost
+    await it.database.write(
+        lambda c: store.session_exited(c, "s", "done", None, spent, work_item_id=it.id)
+    )
+    budget = _policy.Budget(work_item_usd=100) if cap == "instance" else _policy.NO_BUDGET
+    got = stops.budget_breach(it.database, it.id, budget, row=it.row(), path=TASK)
+    assert (got.unknown_launches if isinstance(got, UsdBreach) else 0) == unknown
+    assert (got is None) is (not unknown)
+    assert (it.sessions()[0]["cost_usd"] is None) is bool(unknown)
+    assert it.events("spend_unpriced") == []

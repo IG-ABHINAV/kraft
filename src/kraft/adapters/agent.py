@@ -17,6 +17,7 @@ from kraft import permission_rules as _permission_rules
 from kraft import policy as _policy
 from kraft import registration as _registration
 from kraft import skill as _skill
+from kraft.acp import launch as _acp
 from kraft.adapters import artifact_notes as _artifact_notes
 from kraft.adapters import hook_install as _hook_install
 from kraft.adapters import subprocess as _subprocess
@@ -582,7 +583,14 @@ def _resolve_status(
     """
 
     def resolve(base_status: str, log_path: Path, returncode: int) -> str:
+        from kraft.acp import log as _acp_log  # local: see the module's import block
+
         status = _envelope_is_error(base_status, log_path, returncode, reader)
+        # The ACP client's own failures that are a config problem (an executable it cannot
+        # start, an option the agent refused): `config_error` is not a result-file status, so
+        # the client logs the event and this is where it becomes the session's status.
+        if reader == "acp" and status == "failed" and _acp_log.config_error(log_path) is not None:
+            status = "config_error"
         # Only a *claim of success* is held to the artifact. A worker that
         # stopped to ask a question wrote nothing precisely because it
         # stopped, and `kraft.executor.dispatch.needs_context_question` matches
@@ -1085,6 +1093,29 @@ async def run_agent_task(db, run_dirs, *, follow_node: bool = False, **kw) -> st
     )
 
 
+def _scope_path(hook_point: str, node_id: str) -> str:
+    """The scope a launch's caps are read at: its `hook_point` (a task's path), except an
+    escalation turn's literal "escalation", whose scope is its node (as `caps.budget_breach`)."""
+    return node_id if hook_point == "escalation" else hook_point
+
+
+def _spend_caps(db, item_row, scope: str, budget) -> caps.SpendCaps:
+    if item_row is None:
+        return caps.SpendCaps(False, False)
+    return db.read(lambda c: caps.spend_caps_in_effect(c, item_row, scope, budget))
+
+
+def _unknown_acp_today(db, work_item_id: str, budget) -> int:
+    """ACP sessions finished today that reached a prompt and reported no cost: under a
+    daily dollar cap their spend is unknown, which the instance-wide sum counts as $0."""
+    if budget.daily_usd is None:
+        return 0
+    since = store.local_midnight_utc()
+    return (db.read(lambda c: store.unknown_acp_launches(c, work_item_id, since=since)) or (0, 0))[
+        1
+    ]
+
+
 async def _run_agent_task(
     db,
     run_dirs,
@@ -1132,6 +1163,9 @@ async def _run_agent_task(
     repository: str | None = None,
     repo_entry: RepoEntry | None = None,
     time_cap=None,
+    #: The instance's dollar caps, which an ACP launch is refused under when its entry cannot
+    #: be counted against them (the item's own cap is folded in here, whoever called).
+    budget: _policy.Budget = _policy.NO_BUDGET,
     #: The session's files, else its own folder's (`item_paths.session_files`):
     #: an escalation turn's result and summary are its thread's (Kraft-s7c04.54).
     files: item_paths.SessionFiles | None = None,
@@ -1183,6 +1217,17 @@ async def _run_agent_task(
         raise LaunchRefused(
             f"unknown agent harness {harness!r}; known: {sorted(hs.valid)}"
         ) from None
+    if h.kind == "acp" and (
+        why := _acp.launch_refusal(
+            h,
+            allowed_tools=allowed_tools,
+            deny_tools=deny_tools,
+            permission_mode=permission_mode,
+            sandbox=sandbox,
+            runner=runner,
+        )
+    ):
+        raise LaunchRefused(why)
 
     files = files or item_paths.session_files(run_dirs, work_item_id, session_id)
     task_instruction = _bounded_instruction(files.instruction, task_instruction)
@@ -1199,6 +1244,22 @@ async def _run_agent_task(
     item_row = db.read(
         lambda c: c.execute("SELECT * FROM work_items WHERE id = ?", (work_item_id,)).fetchone()
     )
+    if item_row is not None:
+        # Resolved here, not by the caller: an escalation turn, a gate review and a review reply
+        # have no walk's `budget`, and the item's own dollar cap binds all of them.
+        budget = store.effective_budget(item_row, budget)
+    if h.kind == "acp" and (
+        why := _acp.cap_refusal(
+            h, _spend_caps(db, item_row, _scope_path(hook_point, node_id), budget), model
+        )
+    ):
+        raise LaunchRefused(why)
+    if h.kind == "acp" and (n := _unknown_acp_today(db, work_item_id, budget)):
+        raise LaunchRefused(
+            f"daily_usd cannot be checked: {n} ACP launch(es) today reported no cost, and "
+            "unknown spend is never counted as free; raise or clear `budget.daily_usd`, or give "
+            "the entry a `reports` the cap can count (kraft admin doctor shows what it reports)"
+        )
     in_place = item_row is not None and store.is_in_place(item_row)
     in_copy = in_copy and in_place
     probe_cwd = cwd
@@ -1497,15 +1558,28 @@ async def _run_agent_task(
             text = json.dumps({"mcpServers": servers})
             await asyncio.to_thread(write_whole, handed, text.encode(), 0o600)
             options["extra_mcp_config"] = str(handed)
-    cmd = _harness.build_argv(
-        h,
-        command=command or None,
-        prompt=task_instruction,
-        context=ctx,
-        resume=resume_session_id,
-        options=options,
-        extra=(*hook_argv, *rules_argv),
-    )
+    if h.kind == "acp":
+        cmd = _acp.command(
+            h,
+            files=files,
+            agent_argv=_acp.agent_argv(h, command or None),
+            cwd=cwd,
+            prompt=task_instruction,
+            context=ctx,
+            resume=resume_session_id,
+            model=model,
+            effort=effort,
+        )
+    else:
+        cmd = _harness.build_argv(
+            h,
+            command=command or None,
+            prompt=task_instruction,
+            context=ctx,
+            resume=resume_session_id,
+            options=options,
+            extra=(*hook_argv, *rules_argv),
+        )
     if codex_hook is not None:
         codex_hook["at"] = cmd.index(_MACHINE_HOOK_FLAGS)
         del cmd[codex_hook["at"]]
