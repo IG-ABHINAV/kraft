@@ -72,32 +72,33 @@ to, each test seen to fail for the stated reason before the code makes it pass.
 
 Slices don't replace sub-agents. Each slice becomes a child work item, with its own worktree
 and branch, its own setup, its own implementer session and the nodes after it, and a join that
-replays its commits. That overhead pays only when every slice is large enough to be a work item
-of its own: several tasks, the size of a pull request someone would review by itself. Smaller
-independent tasks stay unsliced: the implementer builds them in one session and can hand them to
-sub-agents there, which share its worktree, need no setup or join, and run in parallel when
-dispatched together. When in doubt, don't
-slice.
+replays its commits. Independent tasks that don't earn that overhead stay unsliced: the
+implementer builds them in one session and can hand them to sub-agents there, which share its
+worktree, need no setup or join, and run in parallel when dispatched together. Each task's
+`Consumes` line is how the implementer tells which tasks are independent, so keep it exact.
 
-When the plan is large, its parts don't depend on each other, and each part is that big, end it
-with a `## Slices` section, one bullet per slice. Kraft builds the slices in parallel, each by
-its own agent in its own worktree, then joins them:
+End the plan with a `## Slices` section only when both of these hold; otherwise write no
+section. When in doubt, don't slice.
+
+- The slices don't use each other's work.
+- Every slice is a pull request's worth of work on its own: three or more tasks, or roughly
+  500 changed lines.
+
+One bullet per slice:
 
 ```
 ## Slices
 
 - **Slice 1: Parser.** Tasks 1-3.
-- **Slice 2: CLI verb.** Tasks 4, 6.
+- **Slice 2: CLI verb.** Tasks 4, 6-7.
 ```
 
 Keys run 1, 2, 3... and every slice has a title. Tasks are the numbers of your `### Task N:`
-headings; a range takes `-`. Slices must be **independent**: each starts from the same commit
-and sees none of another's work, so a slice may not use a helper another slice creates. Put
-shared groundwork (a helper two slices would both write, a schema both need) in tasks outside
-every slice; Kraft builds those first and tests them before any slice starts. Never write that
-one slice "comes after" another: that is refused. Use at most six slices, and at least two.
-When the plan is small, its tasks build on each other, or a slice would hold one small task,
-write no section at all.
+headings; a range takes `-`. Each slice starts from the same commit and sees none of another's
+work, so a slice may not use a helper another slice creates. Put shared groundwork (a helper
+two slices would both write, a schema both need) in tasks outside every slice; Kraft builds
+those first and tests them before any slice starts. Never write that one slice "comes after"
+another: that is refused. Use at most six slices, and at least two.
 
 ## Check your own plan before you finish
 

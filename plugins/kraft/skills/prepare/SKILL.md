@@ -1,6 +1,6 @@
 ---
 name: prepare
-description: "Writes the spec for non-trivial work, then judges whether it runs inline in this session or is handed to Kraft. Use before starting work that needs a spec, or when unsure whether work belongs inline or in Kraft; kraft:handoff does the filing once that is decided."
+description: "Writes the spec for non-trivial work, then judges whether it runs inline in this session or is handed to Kraft. Use before starting work that needs a spec, or when unsure whether work belongs inline or in Kraft, or how to split it (sub-agents, slices or separate work items); kraft:handoff does the filing once that is decided."
 ---
 
 # Preparing work
@@ -30,26 +30,30 @@ judge it yourself by those three classes and say that you did:
   the repo's shared test helpers and fixtures before writing one, since a
   copied helper is a second place to keep current. The repo's own testing
   guidance (its `CLAUDE.md`, `AGENTS.md` or CONTRIBUTING) says where they live.
-  Independent parts of inline work go to sub-agents in this session.
 - **Handoff** - the spec came out architectural-classified, or the user already
   said the work is too big for this session, needs gates, or spans sessions.
   Use `kraft:handoff` to file it, attaching the spec. Kraft's own chain plans it -
   don't write a plan doc just to hand it straight to something that writes its
   own.
 
-**Slices or sub-agents.** Kraft's plan can split a handed-off item into slices,
-built in parallel and joined into one merge request. Slices don't replace
-sub-agents: each slice is a child work item with its own worktree, setup,
-implementer session and review, so it pays only when each part is large enough
-to be a work item of its own, the size of a pull request someone would review
-by itself. When the spec has independent parts that big, say so in the spec and
-in your judgment, so the plan slices them. Smaller independent parts stay in one
-item, or inline, and go to sub-agents, which share the worktree and need no
-setup or join. When in doubt, recommend sub-agents.
-
 **Explicit user override wins outright.** If the user already said "do this
 inline" or "hand this to Kraft," skip judgment and honor that instead - still
 write the spec first.
+
+**Then decide how independent parts are built.** Sub-agents are the default,
+inline or inside one Kraft item: they share the worktree and need no setup or
+join. A part earns more only when it's a pull request's worth of work on its
+own, three or more tasks or roughly 500 changed lines:
+
+- **Slices**, when those parts must land together. One handed-off item, which
+  Kraft's plan splits into child work items, built in parallel and joined into
+  one merge request. Each child has its own worktree, setup, implementer session
+  and review: the overhead that size pays for. Name each part in the spec, with
+  what it covers, so the plan slices along them.
+- **Separate work items**, when each part can merge on its own. One
+  `kraft:handoff` per part, each its own merge request.
+
+When in doubt, use sub-agents. State this call with the inline/handoff one.
 
 Whether to confirm the judgment before executing it is step 4's rule.
 
@@ -63,8 +67,10 @@ If asked, run a plan skill - default `superpowers:writing-plans` - with its own
 review gate. Re-run the judgment above with the plan in hand (it sharpens the
 same inline/handoff call - e.g. a plan that turns out to be one small task can
 downgrade an architectural spec to inline), and attach the plan alongside the
-spec if handing off. Give a plan headed for Kraft a `## Slices` section only by
-the rule above.
+spec if handing off. If the parts are slices, end the plan with a `## Slices`
+section, one bullet per slice (`- **Slice 1: Parser.** Tasks 1-3.`), two to six
+of them. A slice can't use another's work, and tasks two slices share stay
+outside every slice: Kraft builds those first.
 
 **Do not put a full-test-suite run in the plan.** A plan headed for Kraft runs
 under a chain whose verification node already runs the suite (and local review)
