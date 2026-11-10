@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildScenario, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
+import { buildScenario, gateRoundsOf, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
 import { mockServer, type Answer } from "../e2e/contract/mocks/mockApi";
 import { ngDryRun } from "../e2e/contract/mocks/ngBoard";
 import { NG_NOW } from "../e2e/contract/mocks/ngItems";
@@ -630,5 +630,35 @@ describe("a chain draft, kept for the server's life", () => {
     await call("POST", "/publish");
     const after = (await call("GET")).body;
     expect([after.draft, after.result.changes, (await call("POST", "/undo")).status]).toEqual([false, [], 409]);
+  });
+});
+
+describe("gate_rounds on the item", () => {
+  it("shows a rejection's round, with its note, the moment the door settles", () => {
+    const { S, T } = fresh();
+    const id = idOf(S, "needs-gate");
+    const before = S.bundles[id].item.gate_rounds.final_review ?? [];
+    T.reject(id, "final_review", "too vague");
+    const rounds = S.bundles[id].item.gate_rounds.final_review;
+    expect(rounds).toHaveLength(Math.max(before.length, 1));
+    expect(rounds.at(-1)).toMatchObject({ outcome: "rejected", by: "human", note: "too vague", sent_to: "implementation", ended_at: AT });
+  });
+
+  // After the reject cap nothing is pending, so a skip of the gate carries `gate: null` and only the node (`lifecycle`).
+  it.each([
+    ["a skip after the cap, naming the gate by its node, is a round of its own", "g", ["rejected", "skipped"]],
+    ["a skip of a node that is no gate is no round", "verification", ["rejected"]],
+  ])("%s", (_name, node, outcomes) => {
+    const at = (type: string, payload: Record<string, unknown>) => ({ seq: 1, work_item_id: "w", type, node_id: "g", payload, created_at: AT }) as never;
+    const rounds = gateRoundsOf([at("gate_requested", { gate: "g" }), at("gate_rejected", { gate: "g", by: "human", note: "no", node: "plan" }), at("node_skipped", { node_id: node, gate: null, note: null })]);
+    expect(rounds.g.map((r) => r.outcome)).toEqual(outcomes);
+    expect(Object.keys(rounds)).toEqual(["g"]);
+  });
+
+  it("gives the long item's plan gate its rejected round first, then its approval", () => {
+    const S = buildScenario("long");
+    const rounds = Object.values(S.bundles).map((b) => b.item.gate_rounds.plan_approval).find((r) => r?.length === 2);
+    expect(rounds?.map((r: { outcome: string }) => r.outcome)).toEqual(["rejected", "approved"]);
+    expect(rounds?.[0].note).toMatch(/invalidation story/);
   });
 });

@@ -68,7 +68,7 @@ const twice = () => {
 describe("nodeBar (D.6): one pair by node state, never Retry while it runs", () => {
   const bar = (it: ReturnType<typeof detail>, id: string) => {
     const api = it.chain_definition.nodes.find((n) => n.id === id)!;
-    const g = chainGraph(it, [], Date.parse("2026-09-13T10:00:00Z")).nodes.find((n) => n.id === id)!;
+    const g = chainGraph(it, Date.parse("2026-09-13T10:00:00Z")).nodes.find((n) => n.id === id)!;
     const b = nodeBar(it, api, g);
     return [b.secondary?.id ?? null, b.primary?.id ?? null];
   };
@@ -373,14 +373,87 @@ describe("the node screen (D)", () => {
     if (message) expect(screen.getByText(message)).toBeInTheDocument();
   });
 
+  const round = (n: number, over = {}) => ({ n, requested_at: "2026-09-13T09:00:00Z", ended_at: "2026-09-13T09:05:00Z", outcome: "approved", by: "assistant", note: null, sent_to: null, reopened: false, reviewer: null, ...over });
+  // The skip is only in the server's rounds: the page's events (its newest hundred) have long dropped it.
   it("a skipped gate says it was skipped, not that it decides when reached (R14b-05)", async () => {
-    const skipped = { seq: 3, work_item_id: "w1", type: "node_skipped", node_id: "plan_approval", payload: { node_id: "plan_approval", gate: "plan_approval" }, created_at: "2026-09-13T09:00:00Z" };
-    mount(item("done"), "/work-items/w1/nodes/plan_approval", { "GET /work-items/w1/events": [200, [skipped]] });
+    mount(item("done", null, { gate_rounds: { plan_approval: [round(1, { outcome: "skipped", by: null })] } }), "/work-items/w1/nodes/plan_approval", { "GET /work-items/w1/events": [200, []] });
     expect(await screen.findByText("skipped, no decision needed")).toBeInTheDocument();
     expect(screen.queryByText("decides when the chain reaches it")).toBeNull();
     // R15b-03: the header and the status row say so too, not "approved".
     expect(screen.getAllByText("gate · skipped")).toHaveLength(2);
     expect(screen.queryByText("gate · approved")).toBeNull();
+  });
+
+  // plan_approval asked, sent back with a long note, asked again, approved: what 510ysadf did.
+  const NOTE = "The plan skips the invalidation story. Add a section on what happens when git_scan sees a blob_sha change mid-query. ".repeat(6).trim();
+  const resent = { gate_rounds: { plan_approval: [round(1, { outcome: "rejected", note: NOTE, sent_to: "plan" }), round(2)] } };
+
+  it("a gate shows its rounds and the picked round's decision, where it went and its whole note", async () => {
+    mount(item("running", null, resent), "/work-items/w1/nodes/plan_approval?pass=1");
+    const rounds = await screen.findByRole("group", { name: "Rounds of this gate" });
+    const [first, second] = within(rounds).getAllByRole("button");
+    expect(first).toHaveTextContent("round 1 · changes requested");
+    expect(first).toHaveAttribute("aria-pressed", "true");
+    expect(second).toHaveAttribute("aria-pressed", "false");
+    // The fix-loop row is for exec nodes only; this one is the gate's.
+    expect(screen.queryByRole("group", { name: "Passes" })).toBeNull();
+    const card = screen.getByLabelText("Round 1");
+    expect(card).toHaveTextContent("changes requested · assistant · sent to plan");
+    expect(card).toHaveTextContent(NOTE.slice(0, 40));
+    await userEvent.click(second);
+    expect(where()).toBe("/work-items/w1/nodes/plan_approval");
+  });
+
+  // The card previews the first paragraph, rendered; the sheet reads the whole note, rendered.
+  const MD = "Use `git_scan` here, not **a walk**.\n\n- the second paragraph is a list";
+  const withNote = (note: string) => ({ gate_rounds: { plan_approval: [round(1, { outcome: "rejected", note, sent_to: "plan" }), round(2)] } });
+
+  it("a gate's round card previews the first paragraph as markdown, and Read the note opens the whole note in a sheet", async () => {
+    mount(item("running", null, withNote(MD)), "/work-items/w1/nodes/plan_approval?pass=1");
+    const card = await screen.findByLabelText("Round 1");
+    expect(card.querySelector("code")).toHaveTextContent("git_scan");
+    expect(card).not.toHaveTextContent("second paragraph");
+    expect(card).not.toHaveTextContent("**");
+    await userEvent.click(within(card).getByRole("button", { name: "Read the note" }));
+    const sheet = screen.getByRole("dialog", { name: "plan_approval · round 1 note" });
+    expect(sheet).toHaveTextContent(/changes requested · assistant · .+/);
+    expect(within(sheet).getByText("a walk").tagName).toBe("STRONG");
+    expect(within(sheet).getByRole("listitem")).toHaveTextContent("the second paragraph is a list");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a gate's round card has no Read the note for a note that is one short paragraph", async () => {
+    mount(item("running", null, withNote("Short.")), "/work-items/w1/nodes/plan_approval?pass=1");
+    expect(await screen.findByLabelText("Round 1")).toHaveTextContent("Short.");
+    expect(screen.queryByRole("button", { name: "Read the note" })).toBeNull();
+  });
+
+  // A gate's one ended round: the decision and the note show with no row of rounds, and the subtitle says what it came to.
+  const sentBack = { gate_rounds: { plan_approval: [round(1, { outcome: "rejected", by: "human", note: "Cover the cache story.", sent_to: "plan" })] } };
+  it("a gate with one rejected round shows the decision card and its note", async () => {
+    mount(item("running", null, sentBack), "/work-items/w1/nodes/plan_approval");
+    const card = await screen.findByLabelText("Round 1");
+    expect(card).toHaveTextContent("changes requested · you");
+    expect(card).toHaveTextContent("Cover the cache story.");
+    expect(screen.queryByRole("group", { name: "Rounds of this gate" })).toBeNull();
+  });
+
+  it("a gate with one rejected round has a subtitle that says what it came to", async () => {
+    mount(item("running", null, sentBack), "/work-items/w1/nodes/plan_approval");
+    expect(await screen.findAllByText("gate · changes requested · you")).toHaveLength(2);
+  });
+
+  it("a gate whose only round is pending shows no decision card", async () => {
+    mount(item("needs_you", stop("gate", { node: "plan_approval" }), { current_node_id: "plan_approval", pending_gate: "plan_approval", worker_sessions: [], gate_rounds: { plan_approval: [round(1, { outcome: "pending", by: null, ended_at: null })] } }), "/work-items/w1/nodes/plan_approval");
+    await screen.findAllByText("gate · waiting for you", { exact: false });
+    expect(screen.queryByLabelText("Round 1")).toBeNull();
+  });
+
+  it("a gate with one round has no row of rounds", async () => {
+    mount(item("running", null, { gate_rounds: { plan_approval: [round(1)] } }), "/work-items/w1/nodes/plan_approval");
+    await screen.findByRole("heading", { level: 1, name: "plan_approval" });
+    expect(screen.queryByRole("group", { name: "Rounds of this gate" })).toBeNull();
   });
 
   // R15b-01: the desktop's gate pane shows the last test run on the gate; so does the phone's page, each red scope linked to its log.
