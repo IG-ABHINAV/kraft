@@ -28,7 +28,7 @@ from kraft.paths import RunDirs
 #: `support.local_worker`: the in-process local worker every test starts its sessions through.
 #: `support.redaction`: every test starts with no secret registered with `kraft.redact`.
 pytest_plugins = [
-    f"support.{m}" for m in ("rig_fixtures", "local_worker", "redaction", "forge_probe")
+    f"support.{m}" for m in ("rig_fixtures", "local_worker", "redaction", "forge_probe", "basetemp")
 ]
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
