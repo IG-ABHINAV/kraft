@@ -41,11 +41,13 @@ inline" or "hand this to Kraft," skip the inline/handoff judgment and honour
 that instead - still write the spec first, and still decide how parts are built
 below.
 
-**Then decide how independent parts are built.** Sub-agents are the default,
-inline or inside one Kraft item: they share the worktree and need no setup or
-join. A part earns more only when it's a pull request's worth of work on its
-own: roughly 500 changed lines or more. Parts that big make it a handoff even
-if the class said inline:
+**Then decide how independent parts are built.** Slices don't replace
+sub-agents. Sub-agents are the default, inline or inside one Kraft item: they
+share the worktree and need no setup or join. A part earns more only when it's
+a pull request's worth of work on its own: roughly 500 changed lines or more.
+Parts that big move an inline-classified item to a handoff, unless the user
+said "inline": then keep it inline with sub-agents, and say the parts are that
+big. Otherwise:
 
 - **Slices**, when those parts must land together. One handed-off item, which
   Kraft's plan splits into child work items, built in parallel and joined into
