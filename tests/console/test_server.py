@@ -696,9 +696,87 @@ def test_a_remote_restart_asks_then_calls_the_api(
     assert any(toast in t for t in toasts) and "CHILD" not in out
 
 
-def test_a_remote_server_screen_hides_doctor_update_and_the_log(
+#: The release feed answered and a release is already marked on the server.
+MARKED = {**RELEASE, "marked": {"tag": "v2.5.0", "by": "you"}}
+
+
+@pytest.mark.parametrize(
+    ("release", "keys", "asked", "yes", "called", "toast"),
+    [
+        (
+            RELEASE,
+            ["shift+tab", "enter"],
+            "Install v2.5.0 on the server when it is free?",
+            "Update",
+            [("mark", "v2.5.0", None)],
+            "v2.5.0 will be installed on the server when it is free",
+        ),
+        (RELEASE, ["escape"], "Install v2.5.0 on the server when it is free?", "Update", [], None),
+        (UP_TO_DATE, [], None, None, [], "kraft 2.4.0 is up to date"),
+        (
+            MARKED,
+            ["shift+tab", "enter"],
+            "Cancel the marked install of v2.5.0?",
+            "Cancel it",
+            [("unmark",)],
+            "v2.5.0 will not be installed",
+        ),
+    ],
+    ids=[
+        "behind-and-confirmed-marks-the-tag",
+        "behind-and-refused-calls-nothing",
+        "up-to-date-calls-nothing",
+        "marked-and-confirmed-drops-the-mark",
+    ],
+)
+def test_a_remote_update_marks_the_release_or_takes_the_mark_back(
+    console, monkeypatch, remote_server, kraft_is, release, keys, asked, yes, called, toast
+):
+    """`U` in a console with `--server` goes through the API as the web UI
+    does: behind, it asks and marks the newest release for when Kraft is free
+    on the server; refused, it marks nothing; up to date it says so with no
+    call; a release already marked is offered back. No `kraft` child starts
+    here, so nothing installs on this machine."""
+    kraft_is("print('CHILD')")
+    _quiet(monkeypatch, [release])
+    calls: list[tuple] = []
+
+    async def mark_update(tag, channel=None):
+        calls.append(("mark", tag, channel))
+        return {"blocked": []}
+
+    async def unmark_update():
+        calls.append(("unmark",))
+        return {}
+
+    monkeypatch.setattr(client, "mark_update", mark_update)
+    monkeypatch.setattr(client, "unmark_update", unmark_update)
+
+    async def scenario(app, pilot):
+        await pilot.press("2", "U")
+        if asked:
+            await console.until(pilot, lambda: isinstance(app.screen, Confirm))
+            await console.until(
+                pilot, lambda: asked in str(app.screen.query_one("#question").render())
+            )
+            assert str(app.screen.query_one("#yes", Button).label) == yes
+            await pilot.press(*keys)
+            await console.until(pilot, lambda: not isinstance(app.screen, Confirm))
+        if toast:
+            await console.until(pilot, lambda: any(toast in n.message for n in app._notifications))
+        await pilot.pause()
+        return [n.message for n in app._notifications], list(calls), console.output(app)
+
+    toasts, made, out = console.run(scenario, notifications=True)
+    assert made == called and (not toast or any(toast in t for t in toasts))
+    assert "CHILD" not in out
+
+
+def test_a_remote_server_screen_offers_update_but_hides_doctor_and_the_log(
     console, monkeypatch, remote_server
 ):
+    """`U` goes through the API, so it is offered; `d` would run `kraft` here
+    and the log, its filter and its scrolling are the server's disk."""
     _quiet(monkeypatch)
     followed = []
 
@@ -715,8 +793,8 @@ def test_a_remote_server_screen_hides_doctor_update_and_the_log(
         view = app.query_one("#server")
         keys = {label for _, label in app.screen_keys()}
         return (
-            keys >= {"reload", "restart"},
-            keys & {"doctor", "update", "filter"},
+            keys >= {"reload", "restart", "update"},
+            keys & {"doctor", "filter"},
             view.query_one("#server-log").display,
             followed,
         )

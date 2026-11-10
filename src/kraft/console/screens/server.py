@@ -180,8 +180,9 @@ class Server(View):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if client.is_remote():
-            # doctor and update run `kraft` on this machine; the log is the server's disk.
-            return action not in ("doctor", "update", "filter", "scroll")
+            # doctor runs `kraft` on this machine; the log, its filter and its
+            # scrolling are the server's disk. Update goes through the API.
+            return action not in ("doctor", "filter", "scroll")
         return True
 
     def on_mount(self) -> None:
@@ -330,7 +331,67 @@ class Server(View):
         self.app.notify("Restarting the server.", markup=False)
 
     def action_update(self) -> None:
+        if client.is_remote():
+            # The web UI's Install-when-free: the API marks a release on the
+            # server. `kraft admin update --restart` would install here instead.
+            self.run_worker(self._update_remote, group="act")
+            return
         # --restart, so the new version serves; the confirm lists the running items
         # that ends. Never -y: its own refusals still show (spec §4.7).
         argv = ["admin", "update", "--restart"]
         self.run_worker(partial(self.app.run_asking, argv), group="act")
+
+    async def _update_remote(self) -> None:
+        """What the web UI's About page offers: read `/update`, then `POST
+        /update/mark` to install the newest release when Kraft is free on the
+        server, or `DELETE /update/mark` to drop one already marked. Asked
+        first, as the remote restart is; a refusal shown in the server's
+        words."""
+        try:
+            state = await client.update_available()
+        except client.ClientError as exc:
+            self.app.notify_refusal(exc)
+            return
+        if tag := (state.get("marked") or {}).get("tag"):
+            # A release already waits: this key can only take it back. Asked
+            # before "behind", since marking again would only overwrite it.
+            if not await self.app.confirm(
+                f"Cancel the marked install of {tag}?",
+                [f"{tag} would be installed on the server when Kraft is free."],
+                yes="Cancel it",
+            ):
+                return
+            try:
+                await client.unmark_update()
+            except client.ClientError as exc:
+                self.app.notify_refusal(exc)
+                return
+            self.app.notify(f"{tag} will not be installed.", markup=False)
+            return
+        if state.get("behind"):
+            tag = state.get("latest")
+            sentence, _, verb = runner.ask(["admin", "update"]) or ("", None, "Update")
+            if not tag:  # `behind` came with no release to name: no answer
+                self.app.notify("The release feed did not answer; try again.", severity="warning")
+                return
+            if not await self.app.confirm(
+                f"Install {tag} on the server when it is free?",
+                [sentence],
+                yes=verb,
+            ):
+                return
+            try:
+                marked = await client.mark_update(tag, state.get("channel"))
+            except client.ClientError as exc:
+                self.app.notify_refusal(exc)
+                return
+            waiting = f" (waiting: {marked['blocked'][0]})" if marked.get("blocked") else ""
+            self.app.notify(
+                f"{tag} will be installed on the server when it is free{waiting}.",
+                markup=False,
+            )
+            return
+        if state.get("behind") is None:  # the feed did not answer: not up to date
+            self.app.notify("The release feed did not answer; try again.", severity="warning")
+            return
+        self.app.notify(f"kraft {state.get('installed')} is up to date.", markup=False)
