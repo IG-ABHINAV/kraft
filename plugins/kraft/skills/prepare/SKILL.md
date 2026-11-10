@@ -37,25 +37,29 @@ judge it yourself by those three classes and say that you did:
   own.
 
 **Explicit user override wins outright.** If the user already said "do this
-inline" or "hand this to Kraft," skip judgment and honor that instead - still
-write the spec first.
+inline" or "hand this to Kraft," skip the inline/handoff judgment and honour
+that instead - still write the spec first, and still decide how parts are built
+below.
 
 **Then decide how independent parts are built.** Sub-agents are the default,
 inline or inside one Kraft item: they share the worktree and need no setup or
 join. A part earns more only when it's a pull request's worth of work on its
-own, three or more tasks or roughly 500 changed lines:
+own: roughly 500 changed lines or more. Parts that big make it a handoff even
+if the class said inline:
 
 - **Slices**, when those parts must land together. One handed-off item, which
   Kraft's plan splits into child work items, built in parallel and joined into
   one merge request. Each child has its own worktree, setup, implementer session
-  and review: the overhead that size pays for. Name each part in the spec, with
-  what it covers, so the plan slices along them.
+  and review, overhead that only a part this size repays. Name each part in the
+  spec, with what it covers, so the plan slices along them.
 - **Separate work items**, when each part can merge on its own. One
-  `kraft:handoff` per part, each its own merge request.
+  `kraft:handoff` per part, each attaching a spec for that part only, each its
+  own merge request.
 
-When in doubt, use sub-agents. State this call with the inline/handoff one.
+When in doubt, use sub-agents. State the sub-agents, slices or separate-items
+call in the same message as the inline/handoff judgment.
 
-Whether to confirm the judgment before executing it is step 4's rule.
+Whether to confirm these calls before executing them is step 4's rule.
 
 ## 3. Plan - only if the user explicitly asked for one
 
@@ -68,9 +72,10 @@ review gate. Re-run the judgment above with the plan in hand (it sharpens the
 same inline/handoff call - e.g. a plan that turns out to be one small task can
 downgrade an architectural spec to inline), and attach the plan alongside the
 spec if handing off. If the parts are slices, end the plan with a `## Slices`
-section, one bullet per slice (`- **Slice 1: Parser.** Tasks 1-3.`), two to six
-of them. A slice can't use another's work, and tasks two slices share stay
-outside every slice: Kraft builds those first.
+section, one bullet per slice (`- **Slice 1: Parser.** Tasks 1-3.`), nothing
+but task numbers after "Tasks", two to six slices by default. A slice can't use
+another's work, and tasks two slices share stay outside every slice: Kraft
+builds those first.
 
 **Do not put a full-test-suite run in the plan.** A plan headed for Kraft runs
 under a chain whose verification node already runs the suite (and local review)

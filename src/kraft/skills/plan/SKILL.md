@@ -78,11 +78,11 @@ worktree, need no setup or join, and run in parallel when dispatched together. E
 `Consumes` line is how the implementer tells which tasks are independent, so keep it exact.
 
 End the plan with a `## Slices` section only when both of these hold; otherwise write no
-section. When in doubt, don't slice.
+section.
 
 - The slices don't use each other's work.
-- Every slice is a pull request's worth of work on its own: three or more tasks, or roughly
-  500 changed lines.
+- Every slice is a pull request's worth of work on its own: roughly 500 changed lines or more,
+  which usually means three or more tasks.
 
 One bullet per slice:
 
@@ -94,11 +94,11 @@ One bullet per slice:
 ```
 
 Keys run 1, 2, 3... and every slice has a title. Tasks are the numbers of your `### Task N:`
-headings; a range takes `-`. Each slice starts from the same commit and sees none of another's
-work, so a slice may not use a helper another slice creates. Put shared groundwork (a helper
-two slices would both write, a schema both need) in tasks outside every slice; Kraft builds
-those first and tests them before any slice starts. Never write that one slice "comes after"
-another: that is refused. Use at most six slices, and at least two.
+headings; a range takes `-`. Put nothing else with digits after the task list: Kraft reads
+every number there as a task. Each slice starts from the same commit, so put shared groundwork
+(a helper two slices would both write, a schema both need) in tasks outside every slice; Kraft
+builds those first and tests them before any slice starts. Never write that one slice "comes
+after" another: that is refused. Use at least two slices, and at most six by default.
 
 ## Check your own plan before you finish
 
