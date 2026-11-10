@@ -1558,7 +1558,12 @@ def _dispatched(container: dict | None, dispatch) -> list[dict] | None:
     if container is None:
         return None
     return [
-        {"id": step["id"], "tasks": [dispatch(task) for task in step["tasks"]]}
+        {
+            "id": step["id"],
+            # Optional: a chain frozen before this key has none.
+            "read_only": step.get("read_only", False),
+            "tasks": [dispatch(task) for task in step["tasks"]],
+        }
         for step in container["steps"]
     ]
 
@@ -1587,6 +1592,7 @@ STATE_KEYS = (
     "status",
     "attempt",
     "cap",
+    "read_only",
     "note",
     "backend",
     "sliced",
@@ -1680,6 +1686,7 @@ def _state(
     rejected = definition["on_merge_rejected"]
     state.update(
         cap=_cap(definition),
+        read_only=definition.get("read_only", False),
         steps=_dispatched(definition, dispatch),
         on_failure={"steps": _dispatched(definition["on_failure"], dispatch)}
         if definition["on_failure"]
