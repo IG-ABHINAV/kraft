@@ -74,30 +74,39 @@ def tool_limit_refusal(h, *, allowed_tools, deny_tools, permission_mode, grants=
     return None
 
 
-def launch_refusal(
-    h, *, allowed_tools, deny_tools, permission_mode, sandbox, runner, grants=()
-) -> str | None:
+def launch_refusal(h, *, allowed_tools, deny_tools, permission_mode, grants=()) -> str | None:
     """Why this launch cannot run on the harness `h`, or None. An empty allowlist is a
-    limit (it allows nothing); `restrict_tools` is only derived from `allowed_tools`."""
-    if why := tool_limit_refusal(
+    limit (it allows nothing); `restrict_tools` is only derived from `allowed_tools`. A sandbox or a
+    machine is not this door's business: the client runs outside the sandbox over the agent's
+    wrapped argv, and a machine without the client is refused by placement (`ACP_CLIENT`)."""
+    return tool_limit_refusal(
         h,
         allowed_tools=allowed_tools,
         deny_tools=deny_tools,
         permission_mode=permission_mode,
         grants=grants,
-    ):
-        return why
-    if sandbox:
-        return (
-            f"harness {h.id!r} is an ACP agent, which cannot run in a sandbox until "
-            "sandboxed ACP launches land (ACP part 3)"
-        )
-    if runner:
-        return (
-            f"harness {h.id!r} is an ACP agent, which cannot run on a remote machine until "
-            "remote ACP launches land (ACP part 3)"
-        )
-    return None
+    )
+
+
+def marker_path(files) -> Path:
+    """Where the client says it reached the spawn (`LaunchSpec.started_marker`)."""
+    return files.instruction.with_name("acp-started")
+
+
+def read_spec(path: Path) -> LaunchSpec:
+    return LaunchSpec.model_validate_json(Path(path).read_text())
+
+
+def rewrite_agent(path: Path, agent_argv: list[str]) -> None:
+    """Put the sandbox's wrapped argv where the client spawns the agent from: whole or not at
+    all, `0600`. The argv the log shows stays the unwrapped one (`logged_agent_argv`): the
+    wrapped one carries env literals."""
+    from kraft.worker.ca import write_whole
+
+    spec = read_spec(path)
+    spec.logged_agent_argv = spec.logged_agent_argv or list(spec.agent_argv)
+    spec.agent_argv = list(agent_argv)
+    write_whole(Path(path), spec.model_dump_json().encode(), 0o600)
 
 
 def agent_argv(h, command: str | None) -> list[str]:
@@ -175,6 +184,7 @@ def command(
         allowed_tools=allowed_tools,
         deny_tools=deny_tools,
     )
+    spec.started_marker = str(marker_path(files))
     path: Path = files.instruction.with_name("acp-launch.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     write_whole(path, spec.model_dump_json().encode(), 0o600)

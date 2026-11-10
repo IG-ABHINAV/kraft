@@ -24,13 +24,10 @@ from support.server import on_a_free_port
 
 from kraft.worker import os_init
 from kraft.worker.mounts import RELAY_PROXY_ENV
+from kraft.worker.os_init import HINT
 
 OS_INIT = Path(__file__).parents[2] / "src/kraft/worker/os_init.py"
 PY = [sys.executable, "-I", "-S"]
-HINT = (
-    "kraft: a command was not found inside the os sandbox; "
-    "add its directory to the sandbox's expose list"
-)
 linux_only = pytest.mark.skipif(sys.platform != "linux", reason="a Linux-only fence")
 
 # Stands in for bwrap: checks `--seccomp <fd>` follows argv[0] and that fd is
@@ -126,6 +123,7 @@ def launcher(tmp_path):
         darwin=None,
         sweeps=None,
         plain=False,
+        split=False,
     ):
         real = sys.platform == "darwin"
         darwin = real if darwin is None else darwin
@@ -142,6 +140,7 @@ def launcher(tmp_path):
         for pair in setenv:
             argv += ["--setenv", pair]
         argv += ["--started", str(started)] if started else []
+        argv += ["--stdio", "split"] if split else []
         argv += ["--", *confiner, *inner]
         if darwin and (sweeps or not real) and not plain:
             src = DRIVER.replace("@OS_INIT@", repr(str(OS_INIT)))

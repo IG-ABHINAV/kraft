@@ -7,12 +7,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from support import acp as acp_support
 from support.chain_builders import v1_node
 from support.fake_backend import Remote
 from support.harness import entry_of, v1_chain
 from support.remote import attach, make_rig, until, workers_file
 
 from kraft import caps
+from kraft.acp import launch as acp_launch
 from kraft.adapters import hook_install
 from kraft.adapters import subprocess as sp
 from kraft.remote import launch, protocol, registry
@@ -210,6 +212,18 @@ async def test_a_sandboxed_job_carries_its_sandbox_lists_and_credential_declarat
     assert _row(rig, "s1")["sandbox"] == "remote" and _row(rig, "s1")["runner"] == "gpu"
 
 
+async def test_an_acp_job_carries_the_agent_argv_and_the_launch_spec_not_the_client(rig, sandboxed):
+    _, built = sandboxed
+    files = rig.files("s1")
+    files.folder.mkdir(parents=True, exist_ok=True)
+    spec_path = acp_support.spec(files.folder, at=files.instruction.with_name("acp-launch.json"))
+    await _run(rig, "s1", acp_support.client_argv(spec_path), runner="gpu", reader="acp")
+    (job,) = built
+    assert job.argv == acp_launch.read_spec(spec_path).agent_argv
+    assert job.acp == {"spec": str(spec_path)}
+    assert str(spec_path) in job.ro  # shipped with the other read-only files
+
+
 async def test_a_sandboxed_remote_step_runs_no_backend_on_the_server(rig, sandboxed):
     backend, _ = sandboxed
     repo = entry_of({"setup_command": "", "env_passthrough": ["EXAMPLE_KEY"]})
@@ -294,6 +308,21 @@ async def test_a_machine_step_whose_hook_the_machine_cannot_trust_is_refused_and
     assert status == "config_error" and says in log
     assert "'codex' cannot run Kraft's permission hook" in log
     assert not marker.exists() and rig_offline.hub.slots_used("gpu") == 0
+
+
+async def test_an_acp_step_pinned_to_a_machine_without_the_client_cap_is_refused_with_the_reason(
+    rig_offline, tmp_path
+):
+    await attach(rig_offline.hub, rig_offline.machine, caps=protocol.CAPS - {protocol.ACP_CLIENT})
+    files = rig_offline.files("s1")
+    files.folder.mkdir(parents=True, exist_ok=True)
+    spec = acp_support.spec(tmp_path, at=files.instruction.with_name("acp-launch.json"))
+    status = await _run(
+        rig_offline, "s1", acp_support.client_argv(spec), runner="gpu", reader="acp"
+    )
+    assert status == "config_error"
+    assert "ACP agent" in files.log.read_text()
+    assert rig_offline.hub.slots_used("gpu") == 0
 
 
 # ── the machine's own limit: the slot is asked for before the session exists ──
