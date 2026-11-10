@@ -100,7 +100,7 @@ These three paths need no login. Open `/docs` or `/redoc` in a browser to read t
 
 _Added in next_
 
-Every route has a summary, a description and a tag. A route with a typed body lists its fields. A route's tag is its group:
+Every route has a summary, a description and a tag. A route with a typed body lists its fields. `GET /api/work-items` and `GET /api/work-items/{id}` also describe their answers. The schema names the stable fields and allows others, so a client should ignore keys it doesn't know. A route's tag is its group:
 
 | Tag | Routes |
 |---|---|
@@ -119,7 +119,7 @@ Every route has a summary, a description and a tag. A route with a typed body li
 | `auth` | Login, logout and the browser sessions. |
 | `server` | Health, applying saved changes, updates and storage. |
 
-The schema doesn't describe response shapes, which the routes build by hand: [The work item object](/reference/http-api/work-item-object) does that for the one a client reads. The `/api/ws/events` WebSocket isn't an HTTP route, so the schema omits it. [Events](/reference/events#ws-apiwsevents) describes it.
+The schema describes the answers of only the work item list and detail routes, which the other routes build by hand. [The work item object](/reference/http-api/work-item-object) is the full reference for the one a client reads. The `/api/ws/events` WebSocket isn't an HTTP route, so the schema omits it. [Events](/reference/events#ws-apiwsevents) describes it.
 
 The drafts routes and their ops are the Templates and Settings editors' own protocol. Read their schema entries to see what an editor sends, but expect them to change in any release.
 
