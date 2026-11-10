@@ -270,8 +270,7 @@ kraft-lite-config:
 # State lands in ~/.kraft, seeded from config/ on first run.
 [doc("Install `kraft` as a real command; state in ~/.kraft")]
 install: bundle
-    # The Python in .python-version, not uv's newest: 3.15.2 deadlocks in
-    # subprocess.run(input=...), which the server calls (Kraft-awhtu).
+    # The Python in .python-version, the one CI builds with, not uv's newest.
     uv tool install --python "$(cat .python-version)" --from . kraft-sdlc --force
     @echo "installed. run: kraft"
     @grep -q "register-python-argcomplete kraft" ~/.zshrc 2>/dev/null || echo 'tip: add eval "$(register-python-argcomplete kraft)" to ~/.zshrc for tab completion'
@@ -366,7 +365,7 @@ test *ARGS:
 # The unit tier on another Python, in its own environment (.venv-<version>) so
 # it never disturbs the default one: `just test-py 3.12`, or add pytest args,
 # `just test-py 3.13 -k search`. CI runs the whole supported range on main (a
-# pull request skips 3.13); use this to reproduce one version's failure. Full
+# pull request skips 3.13 and 3.15); use this to reproduce one version's failure. Full
 # run, no testmon: its data is per-env.
 [positional-arguments]
 [doc("Unit tier on another Python: just test-py 3.12 [pytest args]")]
