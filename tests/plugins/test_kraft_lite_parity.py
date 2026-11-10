@@ -497,9 +497,8 @@ def _documented_examples() -> list:
     heading, or an inline bullet beside a filler bullet for each other key."""
     out = []
     for path in (
-        PLUGIN / "README.md",
         PLUGIN / "skills" / "run-slices" / "SKILL.md",
-        REPO / "docsite" / "content" / "3.guides" / "5.kraft-lite.md",
+        REPO / "docsite" / "content" / "5.reference" / "12.kraft-lite.md",
     ):
         text = path.read_text()
         for n, block in enumerate(re.findall(r"```markdown\n(.*?)```", text, re.S)):
@@ -521,8 +520,8 @@ DOCUMENTED = _documented_examples()
 def test_lite_documents_its_slices_grammar():
     """The examples are extracted, so one that stops matching the extraction
     must not pass by vanishing."""
-    assert {p.id.split(":")[0] for p in DOCUMENTED} == {"README.md", "SKILL.md", "5.kraft-lite.md"}
-    assert sum("Comes after" in p.values[0] for p in DOCUMENTED) == 2
+    assert {p.id.split(":")[0] for p in DOCUMENTED} == {"SKILL.md", "12.kraft-lite.md"}
+    assert sum("Comes after" in p.values[0] for p in DOCUMENTED) == 1
 
 
 @pytest.mark.parametrize("section", DOCUMENTED)
