@@ -1,6 +1,6 @@
 ---
 name: prepare
-description: "Writes the spec for non-trivial work, then judges whether it runs inline in this session or is handed to Kraft. Use before starting work that needs a spec, or when unsure whether work belongs inline or in Kraft; kraft:handoff does the filing once that is decided."
+description: "Use before starting non-trivial work that needs a spec, when unsure whether it should run inline in this session or be handed to Kraft, or when deciding how to split it into sub-agents, slices or separate work items. kraft:handoff does the filing once that is decided."
 ---
 
 # Preparing work
@@ -12,46 +12,69 @@ it should run.
 
 Run a spec skill - default `superpowers:brainstorming` - unless the user named a
 different one. If the skill isn't installed, say so and ask which to use instead.
-Its own self-review and user-review gate cover "review the spec";
-don't add a second review pass on top of it.
+Its own review and approval (brainstorming's builder check and approval gate)
+cover "review the spec"; don't add a second review pass on top of it.
+
+Stop when the spec is approved. If the spec skill then hands on to a plan
+skill (brainstorming invokes `superpowers:writing-plans`), don't follow it:
+this overrides that hand-off, not the spec skill's approval gate. Come back to step 2, and
+step 3 decides whether a plan is written. If the spec skill did a quick task
+itself, there is nothing left to judge. If it splits the request into several
+independent projects, run steps 1 and 2 for each, in the order agreed: each is
+its own inline task or work item.
 
 ## 2. Judge
 
-Right after the spec, before touching a plan. Read the class (spike, bounded or
-architectural) off the spec. If the spec skill gave it no such classification,
-judge it yourself by those three classes and say that you did:
+Right after the spec, before touching a plan. Size the work by what the spec
+describes; the spec skill may already have said it (`superpowers:brainstorming`
+sizes work as a quick task, a small change, or a project with a written
+design). If it didn't, size it yourself and say that you did:
 
-- **Inline** - the spec came out spike- or bounded-classified. Go straight to
-  the normal dev workflow (TDD, etc.) in this session. No plan doc needed:
-  that's already bounded's own terminal state.
-  Two rules for the tests you write there: a fix adds a row, not a function
-  (find the test that already covers the behaviour and add a parametrized case
-  with a readable id; a new test function is for a new behaviour), and look in
-  the repo's shared test helpers and fixtures before writing one, since a
-  copied helper is a second place to keep current. The repo's own testing
-  guidance (its `CLAUDE.md`, `AGENTS.md` or CONTRIBUTING) says where they live.
-  Independent parts of inline work go to sub-agents in this session.
-- **Handoff** - the spec came out architectural-classified, or the user already
-  said the work is too big for this session, needs gates, or spans sessions.
+- **Inline** - a quick task, a small change, or a spike the user agreed to. Go
+  straight to the normal dev workflow (TDD, etc.) in this session, with no plan
+  doc.
+- **Handoff** - a project with a written design, or the user already said the
+  work is too big for this session, needs gates, or spans sessions.
   Use `kraft:handoff` to file it, attaching the spec. Kraft's own chain plans it -
   don't write a plan doc just to hand it straight to something that writes its
   own.
 
-**Slices or sub-agents.** Kraft's plan can split a handed-off item into slices,
-built in parallel and joined into one merge request. Slices don't replace
-sub-agents: each slice is a child work item with its own worktree, setup,
-implementer session and review, so it pays only when each part is large enough
-to be a work item of its own, the size of a pull request someone would review
-by itself. When the spec has independent parts that big, say so in the spec and
-in your judgment, so the plan slices them. Smaller independent parts stay in one
-item, or inline, and go to sub-agents, which share the worktree and need no
-setup or join. When in doubt, recommend sub-agents.
-
 **Explicit user override wins outright.** If the user already said "do this
-inline" or "hand this to Kraft," skip judgment and honor that instead - still
-write the spec first.
+inline" or "hand this to Kraft," skip the inline/handoff judgment and honour
+that instead - still write the spec first, and still decide how parts are built
+below.
 
-Whether to confirm the judgment before executing it is step 4's rule.
+**Then decide how independent parts are built.** Slices don't replace
+sub-agents. Sub-agents are the default, inline or inside one Kraft item: they
+share the worktree and need no setup or join. A part earns more only when it
+makes sense on its own: a coherent piece with its own tests, which its own
+implement, verify and review loop can check without another part's code. Size
+is a weak hint, not the test. If the user said "inline", stay inline with
+sub-agents and name the parts that would stand alone. Otherwise parts that
+stand alone make it a handoff, as one of:
+
+- **Separate work items**, when each part can merge on its own and is a full
+  pull request in its own right. One `kraft:handoff` per part, each attaching
+  a spec for that part only, each its own merge request.
+- **Slices**, when the parts must land together, or are too small to be worth
+  a merge request each. The same stands-alone test, held to a lower floor: each
+  part earns its own loop but needn't be a whole pull request. One handed-off
+  item, which Kraft's plan splits into child work items, built in parallel and
+  joined into one merge request. Each child has its own worktree, setup,
+  implementer session and review. Name each part in the spec, with what it
+  covers, so the plan slices along them.
+
+State the sub-agents, slices or separate-items call in the same message as the
+inline/handoff judgment.
+
+Whether to confirm these calls before executing them is step 4's rule.
+
+**Tests for inline work.** A fix adds a row, not a function: find the test that
+already covers the behaviour and add a parametrized case with a readable id; a
+new test function is for a new behaviour. Look in the repo's shared test
+helpers and fixtures before writing one, since a copied helper is a second
+place to keep current. The repo's own testing guidance (its `CLAUDE.md`,
+`AGENTS.md` or CONTRIBUTING) says where they live.
 
 ## 3. Plan - only if the user explicitly asked for one
 
@@ -62,9 +85,12 @@ speculatively.
 If asked, run a plan skill - default `superpowers:writing-plans` - with its own
 review gate. Re-run the judgment above with the plan in hand (it sharpens the
 same inline/handoff call - e.g. a plan that turns out to be one small task can
-downgrade an architectural spec to inline), and attach the plan alongside the
-spec if handing off. Give a plan headed for Kraft a `## Slices` section only by
-the rule above.
+move a project-sized spec to inline), and attach the plan alongside the
+spec if handing off. If the parts are slices, end the plan with a `## Slices`
+section, one bullet per slice (`- **Slice 1: Parser.** Tasks 1-3.`), nothing
+but task numbers after "Tasks", two to six slices by default. A slice can't use
+another's work, a task belongs to one slice at most, and tasks two slices share
+stay outside every slice: Kraft builds those first.
 
 **Do not put a full-test-suite run in the plan.** A plan headed for Kraft runs
 under a chain whose verification node already runs the suite (and local review)
@@ -75,9 +101,10 @@ task itself is about) stay in the plan; only the suite-wide run is out.
 ## 4. Auto mode
 
 If the user said `auto` (as an argument, e.g. `/prepare auto ...`) or used
-phrasing like "do this in auto" / "don't wait for me": skip the pre-execution
-confirmation in step 2 (or 3), act on the judgment immediately, and report the
-outcome afterward instead of asking first.
+phrasing like "do this in auto" / "don't wait for me": skip step 2's
+confirmation, including after step 3 re-runs the judgment, act on it
+immediately, and report the outcome afterward instead of asking first. Auto
+never skips the spec skill's own approval.
 
 Otherwise: state the judgment and a one-line reason, then stop and wait for the
 user to confirm or override it before executing.
