@@ -133,9 +133,13 @@ def is_infra_red(ci: CIStatus) -> bool:
     `failure_reason=None` instead, which is not a member of `_INFRA_REASONS`,
     so the `all(...)` below reads it as code-red by default. Only a
     *successful* read that confirms no job ran returns the real empty tuple
-    this function treats as infra.
+    this function treats as infra. A cancelled job with no steps is separately
+    treated as infra evidence: a downstream summary failure can be the only red
+    check after a runner never started.
     """
     if not ci.failed_jobs:
+        return True
+    if any(j.failure_reason == "cancelled_no_steps" for j in ci.failed_jobs):
         return True
     return all(j.failure_reason in _INFRA_REASONS for j in ci.failed_jobs)
 

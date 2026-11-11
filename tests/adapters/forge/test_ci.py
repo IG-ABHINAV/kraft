@@ -62,14 +62,28 @@ async def test_render_ci_verdict(tmp_path, fake_kw, head_sha, expected):
 
 
 @pytest.mark.parametrize(
-    "reason, expected",
-    [("runner_system_failure", "infra"), ("script_failure", "failed")],
-    ids=["infra-red", "code-red"],
+    "jobs, expected",
+    [
+        (
+            (forge.FailedJob("build", "failed", "runner_system_failure"),),
+            "infra",
+        ),
+        (
+            (forge.FailedJob("build", "failed", "script_failure"),),
+            "failed",
+        ),
+        (
+            (
+                forge.FailedJob("summary", "failed", "script_failure"),
+                forge.FailedJob("e2e", "cancelled", "cancelled_no_steps"),
+            ),
+            "infra",
+        ),
+    ],
+    ids=["infra-red", "code-red", "summary-after-cancelled-before-runner"],
 )
-async def test_render_ci_tells_infra_red_from_code_red(tmp_path, reason, expected):
-    ci = forge.CIStatus(
-        state="failed", url="u", failed_jobs=(forge.FailedJob("build", "failed", reason),)
-    )
+async def test_render_ci_tells_infra_red_from_code_red(tmp_path, jobs, expected):
+    ci = forge.CIStatus(state="failed", url="u", failed_jobs=jobs)
 
     _, verdict = await forge.ci.render_ci(
         ci, forge=forge.FakeForge(), repo=tmp_path, branch="b", head_sha=None
