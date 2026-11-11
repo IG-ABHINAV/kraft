@@ -6,7 +6,7 @@ import { detail, SLICED, V1 } from "./testkit";
 const reviewed: ChainNode = { id: "final_review", kind: "gate", gate_after: null, tasks: ["final_review.review.auto_review"], steps: [["final_review.review.auto_review"]], reject_to: null };
 const nodes = [...V1, reviewed];
 const on = { doc: vi.fn(), reject: vi.fn() };
-const round = (n: number, over: Partial<GateRound> = {}): GateRound => ({ n, requested_at: "t", ended_at: "t", outcome: "approved", by: "assistant", note: null, sent_to: null, reopened: false, reviewer: null, ...over });
+const round = (n: number, over: Partial<GateRound> = {}): GateRound => ({ n, requested_at: "t", ended_at: "t", outcome: "approved", by: "assistant", note: null, sent_to: null, verdict: null, reopened: false, reviewer: null, review: null, threads: { total: 0, open: 0, by_label: { must_fix: 0, question: 0, nit: 0 } }, first_threads: [], ...over });
 // plan_approval asked, sent back to plan with a note, asked again, approved: what 510ysadf did.
 const NOTE = "The plan skips the invalidation story. ".repeat(18).trim();
 const twice = [round(1, { outcome: "rejected", note: NOTE, sent_to: "plan" }), round(2)];
@@ -124,5 +124,54 @@ describe("gateView", () => {
 
   it("says a reopened gate is not passed", () => {
     expect(gateView(asked(round(1, { reopened: true })), V1[1], 0, { kind: "chain" }, on).gate.state).toBe("todo");
+  });
+});
+
+describe("gateView: a review round", () => {
+  const counts = (total: number, open: number, by_label: Partial<GateRound["threads"]["by_label"]>) => ({ total, open, by_label: { must_fix: 0, question: 0, nit: 0, ...by_label } });
+  const first = [
+    { id: "t1", file_path: "a.py", start_line: 3, end_line: 3, label: "must_fix", state: "open", body: "fix x" },
+    { id: "t2", file_path: "b.py", start_line: null, end_line: null, label: null, state: "resolved", body: "why y" },
+  ] as GateRound["first_threads"];
+  const reviewedRound = round(1, { outcome: "rejected", note: "SECRET NOTE", sent_to: "plan", review: { id: "rv", outcome: "request_changes", summary: "Two things.", head_sha: "h" }, threads: counts(2, 1, { must_fix: 1, question: 1 }), first_threads: first });
+
+  it("shows the review beside a person's note, and says its outcome only when the round's does not", () => {
+    const v = gateView(asked(reviewedRound, round(2, { outcome: "pending", by: null, ended_at: null })), V1[1], 0, { kind: "chain" }, on, 1);
+    expect(v.said?.note).toBe("SECRET NOTE");
+    expect(v.review).toMatchObject({ outcome: undefined, summary: "Two things.", count: "2 threads · 1 must-fix · 1 question · 1 open", href: "/work-items/w1/review?gate=plan_approval&round=1" });
+    expect(v.review?.threads.map((t) => t.where)).toEqual(["a.py:3", "b.py"]);
+  });
+
+  // The review's own outcome, only when it is not the round's (the badge under the diamond already says that).
+  it.each([
+    ["the same as the round's: not said twice", "request_changes", "rejected", undefined],
+    ["an approval on an approved round: not said twice", "approve", "approved", undefined],
+    ["a comment on a rejected round: said", "comment", "rejected", "commented"],
+    ["an approval on a rejected round: said", "approve", "rejected", "approved"],
+  ] as const)("a review that is %s", (_name, outcome, ended, said) => {
+    const r = round(1, { outcome: ended, review: { id: "rv", outcome, summary: "", head_sha: "h" }, threads: counts(1, 1, { nit: 1 }), first_threads: first.slice(0, 1) });
+    expect(gateView(asked(r), V1[1], 0, { kind: "chain" }, on).review?.outcome).toBe(said);
+  });
+
+  // A person's reject note is what the next agent was told, and shows beside the review; only the thread bounce's is those threads as text.
+  it.each([
+    ["a person's note with no threads", round(1, { outcome: "rejected", by: "human", note: "also rename X", review: { id: "rv", outcome: "comment", summary: "", head_sha: "h" } }), "also rename X"],
+    ["a person's note with threads", round(1, { outcome: "rejected", by: "human", note: "also rename X", threads: counts(1, 1, { nit: 1 }), first_threads: first.slice(0, 1) }), "also rename X"],
+    ["Kraft's bounce for the threads", round(1, { outcome: "rejected", by: "kraft", verdict: "review_threads", note: "must fix: a.py:3 fix x", threads: counts(1, 1, { must_fix: 1 }), first_threads: first.slice(0, 1) }), undefined],
+    ["Kraft's rejection that is not the bounce", round(1, { outcome: "rejected", by: "kraft", verdict: null, note: "the files changed", threads: counts(1, 1, { nit: 1 }), first_threads: first.slice(0, 1) }), "the files changed"],
+    ["a person's rejection carrying the bounce's verdict", round(1, { outcome: "rejected", by: "human", verdict: "review_threads", note: "mine", threads: counts(1, 1, { nit: 1 }), first_threads: first.slice(0, 1) }), "mine"],
+  ])("the note of %s", (_name, r, said) => {
+    const v = gateView(asked(r), V1[1], 0, { kind: "chain" }, on);
+    expect(v.review).toBeDefined();
+    expect(v.said?.note).toBe(said);
+  });
+
+  it.each([
+    ["a note round keeps its note", round(1, { outcome: "rejected", note: "redo", sent_to: "plan" }), "redo"],
+    // The pending round holds the threads being made now, and has no review to show.
+    ["the pending round with threads has no review block", round(1, { outcome: "pending", by: null, ended_at: null, threads: counts(2, 2, { nit: 2 }) }), undefined],
+  ])("%s", (_name, r, said) => {
+    const v = gateView(asked(r), V1[1], 0, { kind: "chain" }, on);
+    expect([v.review, v.said?.note]).toEqual([undefined, said]);
   });
 });

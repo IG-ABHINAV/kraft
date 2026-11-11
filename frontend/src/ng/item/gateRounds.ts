@@ -1,5 +1,6 @@
 import { localTime } from "../../format";
-import type { GateRound } from "../../types";
+import type { GateRound, ReviewOutcome, RoundThread } from "../../types";
+import { LABEL_WORD } from "../review/sharedWords";
 import { cursorOf } from "./cursor";
 import type { Rounds } from "./nodeGraph";
 import type { ItemDetail } from "./useItem";
@@ -91,5 +92,51 @@ export function noteDoc(gate: string, r: GateRound): { title: string; by: string
     title: `${gate} · round ${r.n} note`,
     by: [outcomeWord(r), byWord(r.by), r.ended_at && localTime(r.ended_at)].filter(Boolean).join(" · "),
     content: r.note ?? "",
+  };
+}
+
+/** A review round, by what it holds and not by the gate's kind: it has a review or at least one thread. */
+export const isReviewRound = (r: GateRound): boolean => r.review !== null || r.threads.total > 0;
+
+/** Kraft's rejection of a gate for its review threads: its note is those threads as text, which the round shows as threads. */
+export const isThreadBounce = (r: GateRound): boolean => r.by === "kraft" && r.verdict === "review_threads";
+
+/** The note a round shows: its rejection's, whoever wrote it, except the thread bounce's. Null when there is none to show. */
+export const shownNote = (r: GateRound): string | null => (isThreadBounce(r) ? null : r.note) || null;
+
+/** "3 threads · 2 must-fix · 1 question · 1 open": the labels that have threads, then how many are still open. An
+ *  unlabelled thread counts in the total only. */
+export function threadCountLine(r: GateRound): string {
+  const { total, open, by_label } = r.threads;
+  if (total === 0) return "No threads";
+  const labels = (["must_fix", "question", "nit"] as const)
+    .filter((l) => by_label[l] > 0)
+    .map((l) => `${by_label[l]} ${LABEL_WORD[l]}${l === "nit" && by_label[l] > 1 ? "s" : ""}`);
+  return [`${total} thread${total === 1 ? "" : "s"}`, ...labels, open > 0 ? `${open} open` : null].filter(Boolean).join(" · ");
+}
+
+/** Where a thread sits: "a/b.py:3–5", "a/b.py:3", "a/b.py", or "whole change" for one on no file. */
+export function threadWhere(t: RoundThread): string {
+  if (!t.file_path) return "whole change";
+  if (t.start_line === null) return t.file_path;
+  return t.end_line !== null && t.end_line !== t.start_line ? `${t.file_path}:${t.start_line}–${t.end_line}` : `${t.file_path}:${t.start_line}`;
+}
+
+export const reviewOutcomeWord = (o: ReviewOutcome): string => ({ approve: "approved", request_changes: "changes requested", comment: "commented" })[o];
+
+/** The review's own outcome in words, only when it says something the round's does not: "commented" on an approved round,
+ *  not "changes requested" under a round already called that. Undefined when it adds nothing. */
+export function ownOutcome(r: GateRound): string | undefined {
+  const word = r.review && reviewOutcomeWord(r.review.outcome);
+  return word && word !== outcomeWord(r) ? word : undefined;
+}
+
+/** A round's review as a document, for the drawer and the phone's sheet: "<gate> · round N review", written by
+ *  "<outcome> · <who> · <time>". */
+export function reviewDoc(gate: string, r: GateRound): { title: string; by: string; content: string } {
+  return {
+    title: `${gate} · round ${r.n} review`,
+    by: [r.review && reviewOutcomeWord(r.review.outcome), byWord(r.by), r.ended_at && localTime(r.ended_at)].filter(Boolean).join(" · "),
+    content: r.review?.summary ?? "",
   };
 }

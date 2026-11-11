@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildScenario, gateRoundsOf, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
+import { buildScenario, gateRoundsOf, t, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
 import { mockServer, type Answer } from "../e2e/contract/mocks/mockApi";
 import { ngDryRun } from "../e2e/contract/mocks/ngBoard";
 import { NG_NOW } from "../e2e/contract/mocks/ngItems";
@@ -653,6 +653,43 @@ describe("gate_rounds on the item", () => {
     const rounds = gateRoundsOf([at("gate_requested", { gate: "g" }), at("gate_rejected", { gate: "g", by: "human", note: "no", node: "plan" }), at("node_skipped", { node_id: node, gate: null, note: null })]);
     expect(rounds.g.map((r) => r.outcome)).toEqual(outcomes);
     expect(Object.keys(rounds)).toEqual(["g"]);
+  });
+
+  it("the demo's final-review item has a rejected review round, and the threads endpoint answers with the same window", async () => {
+    const { S, call } = server();
+    const id = idOf(S, "needs-gate");
+    const read = async (n: number) => await call("GET", `/work-items/${id}/threads?gate=final_review&round=${n}`);
+    await call("GET", `/work-items/${id}/threads`); // seeds the list the counts read
+    const [one, two] = S.bundles[id].item.gate_rounds.final_review;
+    expect([one.outcome, one.review?.outcome, one.threads.total, two.outcome]).toEqual(["rejected", "request_changes", 2, "pending"]);
+    expect((await read(1)).body).toHaveLength(one.threads.total);
+    expect((await read(2)).body).toHaveLength(two.threads.total);
+    expect((await read(2)).body.map((t: { id: string }) => t.id)).not.toContain("th-draft");
+    expect((await read(9)).status).toBe(404);
+    expect((await call("GET", `/work-items/${id}/threads?round=1`)).status).toBe(400);
+  });
+
+  it("the demo's round-1 threads quote their code, each line led by its diff mark, on the lines they sit on", async () => {
+    const { S, call } = server();
+    const { body } = await call("GET", `/work-items/${idOf(S, "needs-gate")}/threads?gate=final_review&round=1`);
+    expect(body.map((t: { id: string }) => t.id).sort()).toEqual(["th-r1-must", "th-r1-q"]);
+    for (const t of body) {
+      const lines = t.quote.split("\n");
+      expect(lines.every((l: string) => /^[ +-]/.test(l))).toBe(true);
+      // One line for each line of the range: what a thread on those lines quotes.
+      expect(lines).toHaveLength(t.end_line - t.start_line + 1);
+    }
+  });
+
+  it("a round holds what was made after the previous one ended, up to and including its own end", () => {
+    const at = (type: string, payload: Record<string, unknown>, minute: number) => ({ seq: minute, work_item_id: "w", type, node_id: "g", payload, created_at: t(minute) }) as never;
+    const thread = (id: string, minute: number, over: Record<string, unknown> = {}) => ({ id, gate: "g", created_at: t(minute), label: "nit", state: "open", draft: false, comments: [{ body: id }], ...over });
+    const rounds = gateRoundsOf(
+      [at("gate_requested", { gate: "g" }, 1), at("gate_rejected", { gate: "g", by: "human", note: "no", node: "plan" }, 5), at("gate_requested", { gate: "g" }, 6)],
+      [thread("at-the-end", 5), thread("after", 6), thread("a-draft", 6, { draft: true })],
+      [{ id: "rv", gate: "g", outcome: "comment", submitted_at: t(5) }],
+    );
+    expect(rounds.g.map((r) => [r.threads.total, r.first_threads.map((x) => x.id), r.review?.id ?? null])).toEqual([[1, ["at-the-end"], "rv"], [1, ["after"], null]]);
   });
 
   it("gives the long item's plan gate its rejected round first, then its approval", () => {
