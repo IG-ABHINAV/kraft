@@ -417,7 +417,32 @@ jobs:
       - name: install bubblewrap
         # The os sandbox's tests run bwrap as the runner's own user. Ubuntu 24.04
         # blocks unprivileged user namespaces for it without an AppArmor profile.
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        # When apt can't fetch from its mirror (2026-11-11: the runners could not
+        # resolve azure.archive.ubuntu.com for hours, and `apt-get update` only
+        # warns), the package lists still name the file and its SHA256: fetch it
+        # from the Ubuntu archive, or a mirror off ubuntu.com when that name
+        # doesn't resolve either, and install it only if the sum matches.
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y bubblewrap || true
+          fi
+          if ! command -v bwrap >/dev/null; then
+            version=$(apt-cache policy bubblewrap | awk '/Candidate:/ {print $2}')
+            meta=$(apt-cache show "bubblewrap=$version" 2>/dev/null || true)
+            file=$(awk '/^Filename:/ {print $2; exit}' <<<"$meta")
+            sum=$(awk '/^SHA256:/ {print $2; exit}' <<<"$meta")
+            deb="$RUNNER_TEMP/bubblewrap.deb"
+            for host in https://archive.ubuntu.com/ubuntu https://security.ubuntu.com/ubuntu \
+              https://mirrors.edge.kernel.org/ubuntu https://mirrors.mit.edu/ubuntu; do
+              [ -n "$file" ] && [ -n "$sum" ] || break
+              if curl -fsSL --retry 3 -o "$deb" "$host/$file" && echo "$sum  $deb" | sha256sum -c -; then
+                sudo dpkg -i "$deb" || true
+                break
+              fi
+            done
+          fi
+          command -v bwrap >/dev/null || { echo "::error::could not install bubblewrap"; exit 1; }
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: uv sync --frozen
       - run: uv run pytest -m e2e -n logical --durations=25 -rs --junitxml=e2e-junit.xml
         env:
@@ -589,12 +614,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl jq python3
+          # No apt-get: the image already has git, curl and ca-certificates, and
+          # node reads the JSON, so an unreachable apt mirror (2026-11-11) can't
+          # fail this job. uv brings its own Python.
           case "$(uname -m)" in aarch64|arm64) BD_ARCH=arm64 ;; *) BD_ARCH=amd64 ;; esac
           # Through the API, as e2e-cli's install bd step says.
           asset=$(curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/gastownhall/beads/releases/tags/v${BD_VERSION}" |
-            jq -r --arg n "beads_${BD_VERSION}_linux_${BD_ARCH}.tar.gz" '.assets[] | select(.name == $n) | .url')
+            BD_ASSET="beads_${BD_VERSION}_linux_${BD_ARCH}.tar.gz" node -e '
+              const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+              const a = r.assets.find((x) => x.name === process.env.BD_ASSET);
+              if (a) console.log(a.url);')
           test -n "$asset" || { echo "no beads asset for v${BD_VERSION} linux ${BD_ARCH}"; exit 1; }
           curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/bd.tar.gz" "$asset"
