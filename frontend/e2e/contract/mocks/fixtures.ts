@@ -26,6 +26,7 @@ export const STATES: DisplayState[] = [
 
 import { buildNgBoard } from "./ngBoard";
 import type { EventType } from "../../../src/types/vocab.generated";
+import type { GateRound } from "../../../src/types";
 import { buildNgItem, NG_NOW, NG_SCENARIOS } from "./ngItems";
 
 /* ── ids & time ──────────────────────────────────────────────────────────── */
@@ -83,7 +84,7 @@ export function repo(path: string, i: number, long = false) {
     allow_cross_repo: i === 2,
     // The rest of a `repos.yaml` entry, at config.RepoEntry's defaults, with a setup command so none warns.
     setup_command: "uv sync", managed: true, ci_checks: true, automated_review: null, sandbox: null, policy: null, intent_dir: null,
-    areas: {}, env: {}, env_passthrough: [], local_files: [], carry: [], library_auto_update: false, worktrees: true,
+    areas: {}, env: {}, env_passthrough: [], local_files: [], carry: [], library_auto_update: false, post_merge_publish_jobs: [], worktrees: true,
     submodules: long && i === 0
       ? [
           { path: "vendor/kraft-lite", enabled: true, test_command: "pytest -q", chain_override: null },
@@ -182,6 +183,8 @@ export interface ItemBundle {
   threads?: any[];
   /** Bead ids the item names: what GET /work-items/{id}/cancel-preview lists under `beads` (Mark complete's "beads" row). */
   beads?: string[];
+  /** The reviews submitted on the item (`reviews` rows): what `gateRoundsOf` puts in each round's `review`. */
+  reviews?: any[];
 }
 
 export function logLines(sessionId: string, n: number, long: boolean): any[] {
@@ -691,6 +694,75 @@ export function artifactFor(item: any, variant: Variant) {
   };
 }
 
+/** A round's window `(after, upto]` (`store/gates.py` `_windows`): `after` is the previous round's `ended_at`, `upto` its
+ *  own (null while pending). */
+export type RoundWindow = [after: string | null, upto: string | null];
+export const roundWindows = (list: GateRound[]): RoundWindow[] => list.map((r, i): RoundWindow => [i ? list[i - 1].ended_at : null, r.ended_at]);
+/** Whether `at` is in the window: lower bound exclusive, upper inclusive (`store/gates.py` `_in_window`). ISO strings compare as text. */
+export const within = ([after, upto]: RoundWindow, at: string): boolean => (after === null || at > after) && (upto === null || at <= upto);
+
+/** `store.gate_rounds`, ported for the event types the mock writes: a round opens at a `gate_requested` (a repeat while
+ *  one is open is the same round), and ends at the gate's approval, rejection or skip (`payload.gate`; a skip with no
+ *  gate is none, unless its node is a gate with rounds), or at the item's end. An ending with no open round is a round of its own.
+ *  Each round's `review` and `threads` ports the window rule of `store/gates.py` `_windows`, from `reviews` and `threads`:
+ *  the one thread list the threads endpoint serves, drafts left out. After a transition (`settle`) the counts come from the
+ *  bundle's own threads, without the seeded review set `ngThreads` adds, as the demo has no other thread write that moves a window. */
+export function gateRoundsOf(events: Ev[], threads: any[] = [], reviews: any[] = []): Record<string, GateRound[]> {
+  const rounds: Record<string, GateRound[]> = {};
+  const open: Record<string, GateRound> = {};
+  const round = (gate: string, at: string | null): GateRound => {
+    const list = (rounds[gate] ??= []);
+    const r: GateRound = { n: list.length + 1, requested_at: at, ended_at: null, outcome: "pending", by: null, note: null, sent_to: null, verdict: null, reopened: false, reviewer: null, review: null, threads: { total: 0, open: 0, by_label: { must_fix: 0, question: 0, nit: 0 } }, first_threads: [] };
+    list.push(r);
+    return r;
+  };
+  const end = (gate: string, at: string, outcome: GateRound["outcome"], rest: Partial<GateRound> = {}): GateRound => {
+    const r = open[gate] ?? round(gate, null);
+    delete open[gate];
+    return Object.assign(r, { ended_at: at, outcome }, rest);
+  };
+  for (const e of events) {
+    const p = e.payload as Record<string, any>;
+    // A skip after the reject cap names no gate, only the node: it is the gate's when that already has rounds.
+    const gate: string | undefined = p.gate ?? (e.type === "node_skipped" && rounds[p.node_id] ? p.node_id : undefined);
+    if (e.type === "gate_requested" && gate) {
+      if (!open[gate]) open[gate] = round(gate, e.created_at);
+    } else if ((e.type === "gate_approved" || e.type === "gate_rejected") && gate) {
+      const rejected = e.type === "gate_rejected";
+      const r = end(gate, e.created_at, rejected ? (p.verdict === "fixed" ? "fixed" : "rejected") : "approved", {
+        by: p.by ?? null, note: rejected ? p.note ?? null : null, sent_to: rejected ? p.node ?? null : null, verdict: rejected ? p.verdict ?? null : null,
+      });
+      if (p.by === "agent") r.reviewer = { kind: rejected ? "reject" : "approve", note: String(p.note ?? p.reason ?? p.summary ?? "").trim() };
+    } else if (e.type === "node_skipped" && gate) {
+      end(gate, e.created_at, "skipped", { note: p.note ?? null });
+    } else if (e.type === "work_item_completed" || e.type === "work_item_abandoned") {
+      for (const g of Object.keys(open)) end(g, e.created_at, "closed");
+    } else if (e.type === "gate_reopened" && gate && !open[gate] && rounds[gate]) {
+      rounds[gate][rounds[gate].length - 1].reopened = true;
+    } else if (e.type === "gate_auto_review_skipped" && gate && open[gate] && (p.reason === "passed" || p.reason === "undecided")) {
+      open[gate].reviewer = { kind: p.reason === "passed" ? "ready" : "undecided", note: String(p.note ?? "").trim() };
+    } else if (e.type === "work_item_needs_human" && p.kind === "cap" && typeof p.node_id === "string") {
+      const newest = rounds[p.node_id]?.[rounds[p.node_id].length - 1];
+      if (newest?.outcome === "rejected") newest.sent_to = null;
+    }
+  }
+  for (const [gate, list] of Object.entries(rounds)) {
+    roundWindows(list).forEach((w, i) => {
+      const made = reviews.filter((r) => r.gate === gate && within(w, r.submitted_at));
+      const newest = made.sort((a, b) => (a.submitted_at < b.submitted_at ? -1 : 1)).at(-1);
+      if (newest) list[i].review = { id: newest.id, outcome: newest.outcome, summary: newest.summary ?? "", head_sha: newest.head_sha ?? null };
+      const mine = threads.filter((t) => t.gate === gate && !t.draft && within(w, t.created_at));
+      const by_label = { must_fix: 0, question: 0, nit: 0 };
+      for (const t of mine) if (t.label in by_label) by_label[t.label as keyof typeof by_label]++;
+      list[i].threads = { total: mine.length, open: mine.filter((t) => t.state !== "resolved").length, by_label };
+      list[i].first_threads = [...mine].sort((a, b) => Number(a.label !== "must_fix") - Number(b.label !== "must_fix")).slice(0, 3).map((t) => ({
+        id: t.id, file_path: t.file_path ?? null, start_line: t.start_line ?? null, end_line: t.end_line ?? null, label: t.label ?? null, state: t.state, body: String(t.comments[0]?.body ?? "").split("\n")[0],
+      }));
+    });
+  }
+  return rounds;
+}
+
 /** Fills in, on an item and its sessions, the keys the server's detail always sends (`board.get_work_item`) that a
  *  sample leaves out, at what the server sends an item without that fact, so the mock answers every key
  *  `tests/api/api_shapes.json` lists (`frontend/demo/apiShapes.test.ts`). A key a sample sets is kept. */
@@ -708,6 +780,8 @@ export function serverKeys(b: ItemBundle): ItemBundle {
     children: null, slices: null, parent_id: null, slice_key: null, slice_generation: null, docs_commit: null, pinned_head: null,
     group: null, group_state: null, paused_by_parent: 0,
   });
+  // Not through `fill`: a transition's new event has to show, and `settle` sets it again after each transition.
+  it.gate_rounds = gateRoundsOf(b.events, b.threads ?? [], b.reviews ?? []);
   if (it.budget_cap && !("key" in it.budget_cap)) it.budget_cap.key = "budget_usd";
   const run = `/Users/dev/.kraft/run/items/${it.id}/sessions`;
   for (const s of b.sessions) fill(s, {

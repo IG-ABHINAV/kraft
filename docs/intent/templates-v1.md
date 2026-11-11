@@ -571,6 +571,16 @@ rename.
 enforced-by: tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[all-guards-hold], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[suite-full], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[sandboxed], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[remote-runner], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[a-failed-scope], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[no-results], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[an-in-place-or-member-folder], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[no-carry-declared], tests/executor/test_carried_save.py::test_a_round_saves_the_carried_files_only_when_every_guard_holds[files-not-touched-by-the-round], tests/test_carried.py::test_save_writes_a_generation_current_points_at, tests/test_carried.py::test_a_save_that_fails_midway_leaves_current_alone
 origin: src/kraft/executor/dispatch.py §_save_carried
 
+## REQ a-carried-copy-is-not-replaced-by-an-older-tree
+
+WHERE a repository declares `carry`, the system SHALL NOT save an item's
+carried files over a saved copy whose recorded base commit is a strict
+descendant of the commit the item's branch forks from. It SHALL leave the
+item's baseline as it was, and save as before when either commit is unrecorded
+or git cannot order the two.
+enforced-by: tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[a-newer-tree-replaces], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[an-older-tree-does-not], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[the-same-base-replaces], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[a-diverged-base-replaces], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[no-base-stored], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[a-base-git-does-not-know], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[no-base-given], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[git-missing], tests/test_carried.py::test_a_save_from_an_older_tree_leaves_the_newer_saved_copy[git-hangs], tests/executor/test_carried_save.py::test_dispatching_the_builtin_saves_what_its_command_wrote[targeted]
+origin: src/kraft/carried.py
+
 ## REQ exec-node-orders-concurrent-task-groups
 
 An execution node's `tasks` SHALL be one concurrent task group; its `steps`
@@ -900,6 +910,24 @@ stop the work item for a human, naming the changed files, and SHALL NOT count
 as a task failure that recovery or a fix loop spends on.
 enforced-by: tests/executor/test_read_only.py::test_a_read_only_step_whose_agent_edits_a_tracked_file_stops_naming_it[worktree-edit-swept], tests/executor/test_read_only.py::test_an_untracked_file_is_a_change_and_an_ignored_one_is_not[untracked], tests/executor/test_read_only.py::test_an_untracked_file_is_a_change_and_an_ignored_one_is_not[ignored], tests/executor/test_read_only.py::test_a_step_that_is_not_read_only_is_not_checked, tests/executor/test_read_only.py::test_a_read_only_node_is_checked_around_all_of_its_steps, tests/executor/test_read_only.py::test_a_read_only_step_over_workspace_members_names_the_member_file, tests/executor/test_read_only.py::test_a_sandboxed_read_only_step_that_plants_a_repository_is_not_read_by_host_git, tests/executor/test_read_only.py::test_a_read_only_step_whose_agent_edits_a_tracked_file_stops_naming_it[in-place-commit], tests/executor/test_read_only.py::test_a_persons_edit_during_an_in_place_read_only_step_is_not_a_violation
 origin: src/kraft/executor/read_only.py (Kraft-q2zvw)
+
+## REQ a-read-only-scopes-agent-is-told-to-change-nothing
+
+WHEN the system launches an agent task in a read_only step, or in one of a read_only node's own steps, it SHALL give it the read-only contract, not the contract that tells it to commit and run tests.
+enforced-by: tests/executor/test_read_only.py::test_an_agent_in_a_read_only_scope_is_launched_with_the_read_only_contract[step], tests/executor/test_read_only.py::test_an_agent_in_a_read_only_scope_is_launched_with_the_read_only_contract[node], tests/executor/test_read_only.py::test_an_agent_in_a_read_only_scope_is_launched_with_the_read_only_contract[neither], tests/executor/test_read_only.py::test_an_agent_in_a_read_only_scope_is_launched_with_the_read_only_contract[a-handler-of-a-read-only-node], tests/adapters/test_agent_context.py::test_a_read_only_launch_is_told_to_change_nothing_and_to_be_in_a_copy_only_in_one[read-only-in-the-persons-checkout]
+origin: src/kraft/executor/dispatch.py §_launch_agent
+
+## REQ kraft-lite-freezes-read-only-as-kraft-resolves-it
+
+The Kraft Lite plugin SHALL freeze `read_only` on each exec node and each step as Kraft resolves it.
+enforced-by: tests/plugins/test_kraft_lite_parity.py::test_resolution_matches_kraft[default], tests/plugins/test_kraft_lite_parity.py::test_resolution_matches_kraft[ship]
+origin: plugins/kraft-lite/kl_chains.py
+
+## REQ kraft-lite-state-reports-read-only
+
+The Kraft Lite plugin's `state` SHALL report `read_only` for the node and for each step it lists.
+enforced-by: plugins/kraft-lite/tests/test_walk_end_to_end.py::test_state_reports_steps_and_dispatch
+origin: plugins/kraft-lite/kl.py §_state
 
 ## REQ read-only-is-refused-on-a-task
 
