@@ -155,6 +155,32 @@ The reads you script against print as follows: [`view list`](/reference/cli/view
 object per line, because a stream has no end on which to close an array.
 `kraft view events --json` without `-f` prints one JSON array.
 
+## Calls from a coding agent's shell
+
+_Added in next_
+
+A `kraft` command run from a coding agent's shell is recorded as an assistant's, as an
+[MCP](/reference/mcp-tools) call is: a gate it decides reads as an assistant's decision, and it is
+refused the calls that are a person's, such as a node's `extra_prompt`. The command detects the
+shell from its environment and sends `X-Kraft-Client: agent-shell` with the call.
+
+Claude Code is the only agent detected, through the `CLAUDE_CODE_CHILD_SESSION` variable it sets
+in the commands it runs. That needs Claude Code 2.1.172 or later: an older version isn't detected,
+and its calls are recorded as a person's. Claude Code's IDE extensions don't set it, so a call you
+type in an IDE's integrated terminal stays yours.
+
+Nothing else is detected yet: a harness is added only when its own documentation says it sets a
+variable, and only in the agent's commands.
+
+To be recorded as yourself in such a shell, set `KRAFT_CLIENT=cli` for the command:
+
+```bash
+KRAFT_CLIENT=cli kraft item approve
+```
+
+A value in `KRAFT_CLIENT` always wins over detection. This is attribution, not a credential: it
+records who made a call and doesn't stop a caller that sets the variable.
+
 ## Shell completion
 
 `kraft` completes verbs with [`argcomplete`](https://github.com/kislyuk/argcomplete),
