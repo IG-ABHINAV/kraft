@@ -53,7 +53,7 @@ describe("one step", () => {
     const was = b.sessions.find((s) => s.status === "running")!;
     const top = Math.max(...Object.values(S.bundles).flatMap((x) => x.events.map((e) => e.seq)));
     expect(ticks(1, id)).toEqual([
-      ["worker_session_exited", { session_id: was.id, status: "done", wall_ms: expect.any(Number), model: "claude-sonnet-4-5", tokens_in: 28_000, tokens_cache_write: 0, tokens_cache_read: 0, tokens_out: 3_000, cost_usd: 0.04 }],
+      ["worker_session_exited", { session_id: was.id, status: "done", wall_ms: expect.any(Number), model: "claude-sonnet-5-5", tokens_in: 28_000, tokens_cache_write: 0, tokens_cache_read: 0, tokens_out: 3_000, cost_usd: 0.04 }],
       ["node_completed", { node_id: "verification" }],
       ["node_started", { node_id: "work_brief" }],
       ["worker_session_created", { session_id: expect.any(String), node_id: "work_brief", hook_point: "work_brief.write.work_brief", round: 0, attempt: 1, thread: 1 }],
@@ -179,6 +179,17 @@ describe("after the visitor", () => {
     // The walk enters its node again before the task starts (`dispatch`).
     expect(ticks(1, id)).toEqual([["node_started", { node_id: "verification" }], ["worker_session_started", expect.objectContaining({ session_id: queued.id, node_id: "verification" })]]);
     expect(types(ticks(1, id))).toEqual(["worker_session_exited", "node_completed", "node_started", "worker_session_created", "worker_session_started"]);
+  });
+
+  it("a steered resume of an item never started is an agent's attempt: it starts, then ends with usage", async () => {
+    const { S, ticks, call } = started();
+    const id = board(S, NEVER_STARTED);
+    await call("POST", `/work-items/${id}/resume`, { steer: "keep it to one file" });
+    const queued = S.bundles[id].sessions.at(-1)!;
+    expect(queued).toMatchObject({ status: "pending", harness: "claude" });
+    expect(types(ticks(1, id))).toContain("worker_session_started");
+    const exit = ticks(1, id).find(([type]) => type === "worker_session_exited");
+    expect(exit?.[1]).toMatchObject({ session_id: queued.id, model: "claude-sonnet-5-5", tokens_in: 28_000 });
   });
 
   it("Start on an item never started reads 0 of N, and runs its first node", async () => {
@@ -431,7 +442,7 @@ describe("an escalation turn", () => {
     expect(ticks(1, id)).toEqual([]);
     // `store.session_exited`: done, with the usage it reported and the summary it wrote in its thread's folder.
     const ref = `items/${id}/sessions/escalation-1/out/summary.md`;
-    expect(ticks(1, id)).toEqual([["worker_session_exited", { session_id: s.id, status: "done", wall_ms: expect.any(Number), model: "claude-sonnet-4-5", tokens_in: 28_000, tokens_cache_write: 0, tokens_cache_read: 0, tokens_out: 3_000, cost_usd: 0.04 }]]);
+    expect(ticks(1, id)).toEqual([["worker_session_exited", { session_id: s.id, status: "done", wall_ms: expect.any(Number), model: "claude-sonnet-5-5", tokens_in: 28_000, tokens_cache_write: 0, tokens_cache_read: 0, tokens_out: 3_000, cost_usd: 0.04 }]]);
     expect(s).toMatchObject({ status: "done", exited_at: NG_NOW, session_summary_ref: ref, cost_usd: 0.04 });
     // The item stays as it stopped, its thread ended with its turn.
     expect((await call("GET", `/work-items/${id}`)).body).toMatchObject({ status: "needs_human", display_status: shown, escalation_threads: [{ thread: 1, session_id: s.id, status: "done", ended_at: NG_NOW }] });
