@@ -30,6 +30,7 @@ import type { GateRound } from "../../../src/types";
 import { buildNgItem, NG_NOW, NG_SCENARIOS } from "./ngItems";
 import { ago, agoPy } from "./clock";
 import { isAgentSession, runOutput, scopeRunsOf, type Run } from "./taskKinds";
+import { changedFiles, contentDiff, docBody, gateTitle, isLate, itemDocs, mrOf, type Content } from "./ngContent";
 
 /* ── ids & time ──────────────────────────────────────────────────────────── */
 
@@ -187,6 +188,8 @@ export interface ItemBundle {
   beads?: string[];
   /** The reviews submitted on the item (`reviews` rows): what `gateRoundsOf` puts in each round's `review`. */
   reviews?: any[];
+  /** What the item is about (ngContent.ts): its brief, files and merge request. Only the default sample's board items carry it. */
+  content?: Content;
 }
 
 export function logLines(sessionId: string, n: number, long: boolean): any[] {
@@ -215,13 +218,13 @@ export function logLines(sessionId: string, n: number, long: boolean): any[] {
 /** The log of a task that is no agent's: the command it ran, then what that printed so far, as stdout. Nothing in it is a
  *  tool call or a sub-agent's line, so no sub-agent is listed for it (`subagentList`). `run` is what ran (`taskRun`), or
  *  none, and then the log says `label` and its status. */
-export function commandLog(run: Run | string | null, status: string, label?: string, mr = "https://github.com/acme/kraft-plugins/pull/142"): any[] {
+export function commandLog(run: Run | string | null, status: string, label?: string, mr = mrOf("/Users/dev/code/kraft-plugins", 142).url): any[] {
   return runOutput(run, status, mr, label).map((text, i) => ({ n: i + 1, t: t((i + 1) / 10), src: "stdout", text }));
 }
 
 /** A session's log by what ran it: an agent's lines, or a command's output. */
-export const sessionLog = (agent: boolean, run: Run | string | null, sid: string, n: number, long: boolean, status = "done", label?: string) =>
-  agent ? logLines(sid, n, long) : commandLog(run, status, label);
+export const sessionLog = (agent: boolean, run: Run | string | null, sid: string, n: number, long: boolean, status = "done", label?: string, mr?: string) =>
+  agent ? logLines(sid, n, long) : commandLog(run, status, label, mr);
 
 /** The sub-agents `lines` name, as the server's `/subagents` route lists them: the first runs while its session does. */
 export function subagentList(lines: any[], status: string): any[] {
@@ -567,7 +570,9 @@ const FILES_LONG = [
   `frontend/e2e-shots/${hex(3)}.png`,
 ];
 
-export function diffFor(id: string, variant: Variant) {
+/** `b`: the item's bundle; one with content (ngContent.ts) answers its own files, in the default sample only. */
+export function diffFor(id: string, variant: Variant, b?: ItemBundle) {
+  if (b?.content && variant === "default") return contentDiff(b);
   const files = (variant === "long" ? FILES_LONG : FILES_DEFAULT).map((path, i) => ({ path, insertions: 3 + (i * 7) % 90, deletions: (i * 3) % 40 }));
   const hunk = (p: string) => `diff --git a/${p} b/${p}
 index 3f2a1b0..9c8d7e6 100644
@@ -610,14 +615,18 @@ export function fixTargetFor(gate: string | null, node?: string) {
 
 // The shape of GET /work-items/:id/compare. One whitespace-only file rides along
 // so ignore_whitespace has something to drop, as git -w does for the real route.
-export function compareFor(id: string, variant: Variant, ignoreWhitespace = false, viewed: ReadonlySet<string> = new Set()) {
-  const d = diffFor(id, variant);
-  const files = d.files.map((f, i) => ({ ...f, touched_by: i % 2 ? ["verify"] : ["implementation"] }));
-  if (!ignoreWhitespace) files.push({ path: "src/reindent.py", insertions: 4, deletions: 4, touched_by: ["implementation"] });
+export function compareFor(id: string, variant: Variant, ignoreWhitespace = false, viewed: ReadonlySet<string> = new Set(), b?: ItemBundle) {
+  const d = diffFor(id, variant, b);
+  // An item with content compares base to latest over all it committed, each file touched by the node that changed it,
+  // and has no whitespace-only file.
+  const own = b?.content && variant === "default" ? changedFiles(b) : null;
+  const files = own ? own.map((f) => ({ path: f[0], insertions: f[1], deletions: f[2], touched_by: [isLate(f) ? "verification" : "implementation"] }))
+    : d.files.map((f, i) => ({ ...f, touched_by: i % 2 ? ["verify"] : ["implementation"] }));
+  if (!own && !ignoreWhitespace) files.push({ path: "src/reindent.py", insertions: 4, deletions: 4, touched_by: ["implementation"] });
   for (const f of files) (f as any).viewed = viewed.has(`${id}|${f.path}`);
   return {
     from: { target: "base", sha: "a1b2c3d" }, to: { target: "latest", sha: null }, rebased: false,
-    files, groups: [], diff: d.diff, untracked: d.untracked, truncated: d.truncated,
+    files, groups: [], diff: own ? d.landed.diff : d.diff, untracked: d.untracked, truncated: d.truncated,
     ignore_whitespace: ignoreWhitespace, diff_max_bytes: 1_000_000,
   };
 }
@@ -646,7 +655,8 @@ export function documentsFor(item: any, variant: Variant) {
   // summaries are attempt 1, and the long variant's implement sessions span rounds 0–2.
   let implementRun = 0;
   return docs.map((d, i) => ({
-    document_id: hex(700 + i), work_item_id: item.id,
+    // The item's own id prefix: no two items' documents share an id.
+    document_id: `${item.id.slice(0, 24)}${(700 + i).toString(16).padStart(8, "0")}`, work_item_id: item.id,
     repo: item.repo, title: d.title, kind: d.kind, source_kind: d.kind === "sessions" ? "session_summary" : "artifact",
     path: d.path, node_id: d.node, hook_point: d.hook,
     worker_session_id: d.kind === "sessions" ? hex(item.id.length + i) : null,
@@ -665,10 +675,21 @@ const headinglessLead = (hook: string) =>
     ? "Opened the merge request description from the plan and the three task commits."
     : "Reviewed the invalidation path against main; the blob_sha check holds across a rebase but not a force-push.";
 
-export function documentDetail(id: string, docs: any[]) {
+/** A document's link rows (`_links_for`), ordered by item, none first: an item's row, and a summary's session row
+ *  before it (`ingest_session_summary`). An approved gate document's are its item's only (`ingest_gate_artifact`). */
+export const linksOf = (d: any) => {
+  const item = { work_item_id: d.work_item_id, node_id: null, hook_point: null, worker_session_id: null, session_work_item_id: null };
+  return d.source_kind === "session_summary"
+    ? [{ work_item_id: null, node_id: d.node_id, hook_point: d.hook_point, worker_session_id: d.worker_session_id, session_work_item_id: d.session_work_item_id ?? d.work_item_id }, item]
+    : [item];
+};
+
+/** `own`: the document's text where its item has one (ngContent.ts `docBody`); else the sample text below. `made`: the
+ *  node and task a gate document's front matter names (ngContent.ts `producedBy`); the list's row names none. */
+export function documentDetail(id: string, docs: any[], own?: string, made?: { node_id: string | null; hook_point: string | null }) {
   const d = docs.find((x) => x.document_id === id) ?? docs[0];
   // W12.2: no "Status · repo · path" lead line -- the pane header already says it.
-  const body = `${d.headingless ? headinglessLead(d.hook_point) : `# ${d.title}`}
+  const body = own ?? `${d.headingless ? headinglessLead(d.hook_point) : `# ${d.title}`}
 
 ## Summary
 
@@ -690,17 +711,27 @@ def combine(plan, reports, commits):
 
 ${"Paragraph of prose. ".repeat(60)}
 `;
+  const summary = d.source_kind === "session_summary";
+  // Kraft's own files (`items/<id>/…`: a session's summary, an approved gate's document) are ingested from events, not
+  // scanned from git: no source times, and `path` is no file of the repo's checkout (`get_document`'s `origin`).
+  const ingested = String(d.path).startsWith("items/");
   return {
     id: d.document_id, repo: d.repo, source_kind: d.source_kind, kind: d.kind, title: d.title, path: d.path,
-    // The document's front matter, as an agent writes it (work_item_ids, node_id, hook_point, worker_session_id).
-    content: body, metadata: { work_item_ids: [d.work_item_id], node_id: d.node_id, hook_point: d.hook_point, worker_session_id: d.worker_session_id, author: "claude-opus-4-1", words: 1240 },
-    source_created_at: t(10), source_updated_at: t(90), indexed_at: d.indexed_at,
-    origin: d.source_kind === "artifact" ? "git_scan" : "event_ingest",
-    links: [{ work_item_id: null, node_id: d.node_id, hook_point: d.hook_point, worker_session_id: d.worker_session_id, session_work_item_id: null }],
+    // The document's front matter less its title and kind, as the agent was told to write it (`adapters/agent.py`): a
+    // summary's names its session too.
+    content: body, metadata: { work_item_ids: [d.work_item_id], node_id: made?.node_id ?? d.node_id, hook_point: made?.hook_point ?? d.hook_point, ...(summary && { worker_session_id: d.worker_session_id }) },
+    source_created_at: ingested ? null : t(10), source_updated_at: ingested ? null : t(90), indexed_at: d.indexed_at,
+    origin: ingested || summary ? "event_ingest" : "git_scan",
+    links: linksOf(d),
   };
 }
 
-export function artifactFor(item: any, variant: Variant) {
+/** `b`: the item's bundle; one with content answers its gate document's own text, by its kind (`items/<id>/docs/<kind>.md`). */
+export function artifactFor(item: any, variant: Variant, b?: ItemBundle) {
+  const kind = b?.content && /\/docs\/([^/]+)\.md$/.exec(item.gate_artifact ?? "")?.[1];
+  if (kind) {
+    return { work_item_id: item.id, path: item.gate_artifact, title: gateTitle(b!, kind), content: docBody(b!, { kind: `${kind}s` }), truncated: false, artifact_max_bytes: 65536, absolute_path: `/Users/dev/.kraft/run/${item.gate_artifact}` };
+  }
   return {
     work_item_id: item.id, path: item.gate_artifact ?? ".engineering/reviews/2026-09-13-caching-layer.md",
     title: `Review: ${item.title}`,
@@ -905,16 +936,53 @@ function analyticsFor(variant: Variant) {
   };
 }
 
-export function searchFor(q: string, docs: any[], variant: Variant) {
-  const long = variant === "long";
+/** FTS5's tokens (`unicode61`): each run of letters and digits, case folded. */
+const TOKEN = /[\p{L}\p{N}]+/gu;
+const tokens = (s: string): string[] => String(s).toLowerCase().match(TOKEN) ?? [];
+
+/** The filters GET /search takes beside `q` (`api/routes/search.py`). */
+export type SearchFilters = { source_kind?: string | null; kind?: string | null; repo?: string | null; limit?: number };
+
+/** `snippet(documents_fts, 1, '[', ']', '…', 64)`: up to 64 tokens of the text, from a little before its first match,
+ *  each matched token in brackets, an ellipsis where it was cut. */
+function snippet(text: string, terms: string[]): string {
+  const at = [...text.matchAll(TOKEN)];
+  const first = Math.max(0, at.findIndex((m) => terms.includes(m[0].toLowerCase())));
+  const from = Math.max(0, Math.min(first - 8, at.length - 64));
+  const to = Math.min(at.length, from + 64);
+  if (!at.length) return "";
+  let out = from > 0 ? "…" : "";
+  let pos = at[from].index!;
+  for (let k = from; k < to; k++) {
+    const m = at[k];
+    out += text.slice(pos, m.index) + (terms.includes(m[0].toLowerCase()) ? `[${m[0]}]` : m[0]);
+    pos = m.index! + m[0].length;
+  }
+  return out + (to < at.length ? "…" : "");
+}
+
+/** GET /search over `docs`, each read by `body`, as the index's text search answers it (`index/service.py` `_fts`): the
+ *  filters narrow the documents; one matches when its title and text together hold every word of the query, whole
+ *  words, case aside (FTS5's implicit AND; its path is not indexed). It ranks by the whole query in its title, then by
+ *  the words its title holds, then a document before a session's summary; `limit` of them, 20 by default. */
+export function searchFor(q: string, docs: any[], variant: Variant, body: (d: any) => string = () => "", f: SearchFilters = {}) {
+  const terms = [...new Set(tokens(q))];
+  const query = terms.join(" ");
+  // `search.py` clamps what it is asked to 1..100: a limit of 0 answers one.
+  const limit = Math.max(1, Math.min(f.limit ?? 20, 100));
+  const ranked = docs.filter((d) => (!f.source_kind || d.source_kind === f.source_kind) && (!f.kind || d.kind === f.kind) && (!f.repo || d.repo === f.repo)).map((d) => {
+    const title = tokens(d.title);
+    const all = new Set([...title, ...tokens(body(d))]);
+    return { d, all, score: [Number(` ${title.join(" ")} `.includes(` ${query} `)), terms.filter((w) => title.includes(w)).length, Number(d.source_kind === "artifact")] };
+  }).filter((r) => terms.length > 0 && terms.every((w) => r.all.has(w))).sort((a, b) => b.score[0] - a.score[0] || b.score[1] - a.score[1] || b.score[2] - a.score[2]);
   return {
     query: q, mode: "hybrid",
-    results: variant === "empty" ? [] : docs.slice(0, long ? 15 : 6).map((d, i) => ({
+    results: variant === "empty" ? [] : ranked.map((r) => r.d).slice(0, limit).map((d, i) => ({
       id: d.document_id, repo: d.repo, source_kind: d.source_kind, kind: d.kind, title: d.title, path: d.path,
-      snippet: long ? `…${LONG_DESCRIPTION.slice(40, 380)}…` : "…carry findings_measured from the verify node into the fix loop's system prompt…",
+      snippet: snippet(body(d), terms),
       score: 0.91 - i * 0.05,
       // The item the document belongs to, so opening a result lands on a real page (Kraft-hrlqs).
-      links: [{ work_item_id: d.work_item_id, node_id: d.node_id, hook_point: d.hook_point, worker_session_id: d.worker_session_id }],
+      links: linksOf(d),
     })),
   };
 }
@@ -966,7 +1034,7 @@ export function buildScenario(variant: Variant, theme: { mode?: string; density?
     ng[sc] = b.item.id; bundles[b.item.id] = b; docs[b.item.id] = [];
   });
   const board = buildNgBoard(variant, bundles);
-  for (const id of [...board.list, ...board.archived]) docs[id] = [];
+  for (const id of [...board.list, ...board.archived]) docs[id] = itemDocs(bundles[id]);
   for (const b of Object.values(bundles)) serverKeys(b);
   return { variant, items, archived, byState, ng, ngBoard: board.list, ngArchived: board.archived, bundles, docs, settings: settingsFor(variant, theme), analytics: analyticsFor(variant) };
 }

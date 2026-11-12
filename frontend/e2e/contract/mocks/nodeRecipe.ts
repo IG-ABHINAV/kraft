@@ -30,6 +30,11 @@ export interface Writer {
   readonly frozen: string;
   readonly repo: string;
   readonly head: string | null;
+  /** The tasks its implementer reports (`plan_progress`), in order: none on a chain with no plan (ngContent.ts `planOf`). */
+  readonly plan: readonly string[];
+  /** The file verification's round adds (ngContent.ts, a `late` file): the one its first round of tests fails on. None for
+   *  an item with no content of its own, whose round fails the sample's test. */
+  readonly late?: string | null;
   /** The item's events, oldest first, the ones the recipe writes included. */
   readonly events: any[];
   /** How many polls an external wait takes, where the recipe does not say. */
@@ -54,8 +59,10 @@ export interface Writer {
   selfApprove(gate: string): void;
   mrOpened(node: string): void;
   complete(node: string): void;
-  /** Whether a scope skip passed over this task or its step. */
+  /** Whether a scope skip passed over this task or its step, or a step retry's fork started past it. */
   skipped(path: string): boolean;
+  /** Whether a step retry's fork started past this task's step: its sessions from before are still this round's. */
+  passed(path: string): boolean;
 }
 
 /** A recipe's beats; `T` is what it hands back once played out. */
@@ -88,8 +95,17 @@ export const agentWall = (hookPoint: string, n: number) => Math.round(agentRun(h
  *  failed command with an extract of its output, and the command to confirm the fix with; no file, no line, the hook as its source. */
 export type Found = { finding: Record<string, unknown>; print: string; cmd?: string };
 const blindFinding = (hook: string, cmd: string, extract: string) => ({ severity: "critical", message: `${hook} failed\n- ${cmd}: ${extract}\n\nConfirm the fix with: ${cmd}`, file: null, line: null, source_plugin: hook });
+/** The line the repo's tests print for round 0's red test: the sample's, or the item's own, named after the file its
+ *  round adds (a test file's test of its own name; a page's doctest, as pytest collects one). */
+export function failedTest(late?: string | null): string {
+  if (!late) return "FAILED tests/test_cache.py::test_cache_evicts_oldest - AssertionError";
+  const base = late.split("/").pop()!.replace(/\.[^.]+$/, "").replace(/\.test$/, "");
+  return /\.(md|rst|txt)$/.test(late) ? `FAILED ${late}::${late.split("/").pop()}` : `FAILED ${late}::${base} - AssertionError`;
+}
+/** A red test run's log with the item's own failing test in the sample's place (`failedTest`). */
+export const ownFailure = (log: any[], late?: string | null) => (late ? log.map((l) => (l.text === failedTest() ? { ...l, text: failedTest(late) } : l)) : log);
 /** Round 0's red test, then round 1's red docs check: two defects, so two fingerprints, and the stuck detector does not fire. */
-export const RED: Found = { finding: blindFinding(TESTS, RUNS["kraft.verify_changed_test_scopes"].command!, "FAILED tests/test_cache.py::test_cache_evicts_oldest - AssertionError"), print: "5be0c1d7a93e4f20", cmd: RUNS["kraft.verify_changed_test_scopes"].command };
+export const redOf = (late?: string | null): Found => ({ finding: blindFinding(TESTS, RUNS["kraft.verify_changed_test_scopes"].command!, failedTest(late)), print: "5be0c1d7a93e4f20", cmd: RUNS["kraft.verify_changed_test_scopes"].command });
 export const DOCS_RED: Found = { finding: blindFinding(TESTS, DOCS_SCOPE.command!, "docs/search.md:12 MD040/fenced-code-language Fenced code blocks should have a language specified"), print: "c41f0e9b2d7a6853", cmd: DOCS_SCOPE.command };
 
 /** A session that ran to `status`: made (and launched), a beat, then ended. */
@@ -205,8 +221,8 @@ export function* awaitPolls(w: Writer, node: string, path: string, kind: string,
   return s;
 }
 
-/** The steps of the implementer's plan, as it reports them (`plan_progress`). */
-const PLAN = ["Read the search path", "Key the cache by content hash", "Invalidate on reindex", "Bound the cache", "Tests", "Docs"];
+/** The plan's tasks of an item with no content of its own (the item page's samples), as its implementer reports them. */
+export const PLAN = ["Read the search path", "Key the cache by content hash", "Invalidate on reindex", "Bound the cache", "Tests", "Docs"];
 
 /** A gate the walk reaches: asked for, its reviewer run and ready for a person (`gate_review`), who decides it. The
  *  person's decision is not the recipe's. `chain_revision_approval` passes itself when the revision changed nothing
@@ -235,22 +251,26 @@ export function* nodeBeats(w: Writer, n: DefNode, o: { red?: boolean } = {}): Be
     case "implementation": {
       if (!go("implementation.main.implement")) break;
       const s = w.open("implementation.main.implement", n.id);
-      // Its plan's tasks as it reports them, half of them a beat.
-      for (let k = 0; k < PLAN.length; k++) {
-        if (k % 3 === 0) yield;
-        w.ev("plan_progress", { node_id: n.id, task: k + 1, total: PLAN.length, title: PLAN[k] }, 1.5);
+      // Its plan's tasks as it reports them, half of them a beat; with no plan it reports none, and works two beats all the same.
+      const half = Math.ceil(w.plan.length / 2);
+      yield;
+      for (let k = 0; k < w.plan.length; k++) {
+        if (k === half) yield;
+        w.ev("plan_progress", { node_id: n.id, task: k + 1, total: w.plan.length, title: w.plan[k] }, 1.5);
       }
-      w.clock(-1.5 * PLAN.length);
+      if (!w.plan.length) yield;
+      w.clock(-1.5 * w.plan.length);
       w.close(s);
       break;
     }
     case "verification": {
-      const had = [TESTS, REVIEW].filter(go);
+      // `collect_findings` reads the round's rows, so a step a step retry passed still counts as measured.
+      const had = [TESTS, REVIEW].filter((p) => go(p) || w.passed(p));
       let round = 0;
       if (go(TESTS) && o.red) {
         // The tests step failed, so the review step after it never ran this round; a fix cycle mends it.
         yield* testPass(w, 0, true);
-        measured(w, 0, [RED], [TESTS]);
+        measured(w, 0, [redOf(w.late)], [TESTS]);
         yield* fixCycle(w, 1, true);
         round = 1;
       }

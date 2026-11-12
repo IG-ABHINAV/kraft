@@ -122,8 +122,19 @@ describe("transitions", () => {
     ["archive files an ended item away", "kraft-3a90", (T, id) => T.archive(id), { status: "completed", display_status: "archived", archived_by: "you", archived_at: AT },
       [["work_item_archived", { by: "you" }, null]]],
     ["restore puts it back under Done", "kraft-9a02", (T, id) => T.restore(id), { status: "completed", display_status: "done", archived_at: null }, [["work_item_restored", {}, null]]],
-    ["raise budget lifts the cap and retries", "kraft-58e2", (T, id) => T.raiseBudget(id, 8), { status: "active", display_status: "running", stop: null, budget_cap: expect.objectContaining({ cap_usd: 8, source: "item" }) },
-      [["budget_raised", { budget_usd: 8 }, null], ["work_item_retried", { node_id: "implementation" }, "implementation"], ...forked()]],
+    ["raise budget lifts the cap and retries", "kraft-58e2", (T, id) => T.raiseBudget(id, 8), { status: "active", display_status: "running", stop: null, current_step: 1, budget_cap: expect.objectContaining({ cap_usd: 8, source: "item" }) },
+      // Stopped before its code review, past its first step with no fix cycle run: the retry goes on at that step (`_stopped_step`).
+      [["budget_raised", { budget_usd: 8 }, null], ["work_item_retried", { node_id: "verification" }, "verification"],
+        ["run_forked", { scope: "step", path: "verification.review", reopened: [], preserved: [] }], ["cap_counters_reset", { by: "human", counters: {} }]]],
+    // The step cursor (`current_step`): written as a step's task starts (`set_current_step`), kept by re-entering the node
+    // the item stands on and reset by entering another (`store.enter_node`), reset by a rejection (`stand_at`), and set by
+    // a retry to where its fork starts (`RunFork.start`; a step retry's is the raise below). Each from a step it was not.
+    ["a task's session records its step", "running", (T, id, b) => ((b.item.current_step = 0), T.createSession(id, "verification", "verification.review.code_review")), { current_step: 1 },
+      [["worker_session_created", { hook_point: "verification.review.code_review" }, "verification"]]],
+    ["entering the node it stands on keeps its step", "running", (T, id, b) => ((b.item.current_step = 1), T.enterNode(id, "verification")), { current_step: 1 }, [["node_started", { node_id: "verification" }, "verification"]]],
+    ["entering another node starts at its first step", "running", (T, id, b) => ((b.item.current_step = 1), T.enterNode(id, "work_brief")), { current_node_id: "work_brief", current_step: 0 }, [["node_started", { node_id: "work_brief" }, "work_brief"]]],
+    ["a rejection starts its target at its first step", "needs-gate", (T, id, b) => ((b.item.current_step = 1), T.reject(id, "final_review", "too vague")), { current_node_id: "implementation", current_step: 0 }, [["gate_rejected"]]],
+    ["a node retry starts at its first step", "failed", (T, id, b) => ((b.item.current_step = 1), T.retry(id)), { current_step: 0 }, [["work_item_retried"], ...forked()]],
     ["escalate starts a turn in a new thread", "failed", (T, id) => T.escalate(id, "look at the token", true), { status: "needs_human", display_status: "escalated" },
       turnStarted({ message: "look at the token", auto: false, thread: 2, turn: 1 }, "draft_merge_request", 2)],
     ["stop escalation ends the turn, the item as it stopped", "failed", (T, id) => (T.escalate(id, "look"), T.stopEscalation(id)), { status: "needs_human", display_status: "failed" },
@@ -431,19 +442,49 @@ describe("samples and answers as the server shapes them", () => {
     const { S, call } = server();
     expect((await call("POST", `/work-items/${idOf(S, "kraft-b108")}/retry`, {})).body).toMatchObject({ node_id: "draft_merge_request", path: "draft_merge_request" });
   });
+  // `_stopped_step`: a plain retry after a cap or budget stop past a node's first step reruns that step, the first attempt
+  // of its task; at the first step, or once the node's fix loop has run, the whole node.
+  it.each<[string, string, (b: ItemBundle) => void, string, number]>([
+    ["a spend stop before the code review, raised", "kraft-58e2", () => {}, "verification.review", 1],
+    ["a time cap at the code review", "kraft-58e2", (b) => { b.item.stop = { ...b.item.stop, kind: "cap" }; }, "verification.review", 1],
+    ["a spend stop at the node's first step", "kraft-58e2", (b) => { b.item.current_step = 0; }, "verification", 2],
+    ["a spend stop after a fix cycle", "kraft-58e2", (b) => { b.events.push({ ...b.events.at(-1)!, type: "fix_cycle_started", payload: { node_id: "verification", cycle: 1 } }); }, "verification", 2],
+    // A rejection that re-runs the node gives its fix rounds back (`counters.reset_fix_loops`): no fix has run since.
+    ["a spend stop after a fix cycle and a rejection that re-ran the node", "kraft-58e2", (b) => {
+      b.events.push({ ...b.events.at(-1)!, type: "fix_cycle_started", payload: { node_id: "verification", cycle: 1 } }, { ...b.events.at(-1)!, type: "gate_rejected", payload: { gate: "local_review", note: "again", node: "implementation", by: "human", verdict: "reject" } });
+    }, "verification.review", 1],
+    ["a spend stop after a fix cycle and a rejection to a node after it", "kraft-58e2", (b) => {
+      b.events.push({ ...b.events.at(-1)!, type: "fix_cycle_started", payload: { node_id: "verification", cycle: 1 } }, { ...b.events.at(-1)!, type: "gate_rejected", payload: { gate: "local_review", note: "again", node: "work_brief", by: "human", verdict: "reject" } });
+    }, "verification", 2],
+    // Only a cap or a spend stop says nothing about the steps passed: any other stop reruns the node.
+    ["a stuck stop at its second step", "kraft-58e2", (b) => { b.item.stop = { ...b.item.stop, kind: "stuck" }; }, "verification", 2],
+    ["a failed stop at its second step", "kraft-58e2", (b) => { b.item.stop = { ...b.item.stop, kind: "failed" }; }, "verification", 2],
+    // A rewind names its own path: the whole node it points at, even the one the item stopped in.
+    ["a spend stop with a rewind pending", "kraft-58e2", (b) => { b.events.push({ ...b.events.at(-1)!, type: "rewind_requested", payload: { review_id: "r1", target: "verification", note: "redo it" } }); }, "verification", 2],
+  ])("%s retries %s at its stopped step", async (_name, bead, setup, path, attempt) => {
+    const { S, call } = server();
+    const b = S.bundles[idOf(S, bead)];
+    setup(b);
+    const r = b.item.stop.kind === "budget" ? await call("POST", `/work-items/${b.item.id}/budget/raise`, { budget_usd: 40 }) : await call("POST", `/work-items/${b.item.id}/retry`, {});
+    expect([r.status, r.body.path, r.body.attempt, b.events.filter((e) => e.type === "run_forked").at(-1)?.payload.path]).toEqual([200, path, attempt, path]);
+  });
 
   it("the spend-capped sample says so in its stop, its last event and its spend", () => {
     const { S } = server();
     const b = S.bundles[idOf(S, "kraft-58e2")];
     expect(b.item.stop).toMatchObject({ kind: "budget", scope: "work_item" });
     expect(b.item.stop.facts).toEqual({});
-    expect(b.events.filter((e) => e.type === "work_item_needs_human").at(-1)?.payload).toEqual({ node_id: "implementation", reason: "budget cap reached: $5.00 spent on this work item, cap $5.00. Nothing new was started; a running agent was not interrupted.", kind: "budget", budget: { scope: "work_item", spent_usd: 5, cap_usd: 5 } });
+    expect(b.events.filter((e) => e.type === "work_item_needs_human").at(-1)?.payload).toEqual({ node_id: "verification", reason: "budget cap reached: $5.00 spent on this work item, cap $5.00. Nothing new was started; a running agent was not interrupted.", kind: "budget", budget: { scope: "work_item", spent_usd: 5, cap_usd: 5 } });
     const cost = b.sessions.reduce((a, s) => a + s.cost_usd, 0);
     expect([Math.abs(cost - 5) < 0.01, Math.abs(b.item.usage.total.cost_usd - 5) < 0.01, b.item.budget_cap.spent_usd]).toEqual([true, true, 5]);
-    // A spend cap interrupts nothing: the session that spent the last of it ran to its end, then the walk stopped.
+    // A spend cap interrupts nothing: the agent that spent the last of it ran to its end, verification's tests (no agent,
+    // no spend) ran, and the walk stopped on verification before its code review launched. Its stop's task, attempt and
+    // step are the node's latest session's, the tests' (`board._stop_task_and_attempt`, `_step_of`), as are the row's.
     expect(b.sessions.filter((s) => s.status !== "done")).toEqual([]);
-    const last = b.sessions.at(-1);
-    expect([last.hook_point, last.attempt, last.session_summary_ref, b.item.stop.task, b.item.stop.attempt]).toEqual(["implementation.main.implement", 1, `items/${b.item.id}/sessions/${last.id}/out/summary.md`, "implementation.main.implement", 1]);
+    const agent = b.sessions.filter((s) => s.model).at(-1);
+    expect([agent.hook_point, agent.session_summary_ref, b.sessions.slice(b.sessions.indexOf(agent) + 1).map((s) => s.hook_point)]).toEqual(["implementation.main.implement", `items/${b.item.id}/sessions/${agent.id}/out/summary.md`, ["verification.tests.test_changed_scopes", "verification.tests.test_changed_scopes"]]);
+    expect([b.item.current_node_id, b.item.stop.node, b.item.stop.task, b.item.stop.attempt]).toEqual(["verification", "verification", "verification.tests.test_changed_scopes", 1]);
+    expect([b.item.summary.step, b.item.step]).toEqual([{ index: 1, count: 2 }, { index: 1, count: 2, name: "tests", task: "test_changed_scopes" }]);
   });
 
   it.each([

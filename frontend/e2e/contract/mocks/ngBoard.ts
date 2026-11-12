@@ -3,6 +3,8 @@ import draftViews from "./draftViews.json" with { type: "json" };
 import { chainOf } from "./ngChain";
 import { buildNeverStarted, buildNgItem, type NgScenario } from "./ngItems";
 import { cacheRead } from "./nodeRecipe";
+import { CONTENT, mrOf, planOf } from "./ngContent";
+import { NG_NOW } from "./clock";
 
 /**
  * The board's list (ux2-W6): one row per kind of row AreaBoard.dc.html
@@ -13,23 +15,51 @@ import { cacheRead } from "./nodeRecipe";
  * (transitions.ts `listRow`, whose `stop` carries no `facts`, as W4's list sends it).
  */
 
-/** `fresh`: filed paused and never started, so it has no history at all (only `work_item_created`), whatever `sc` ran. */
-type Row = { sc: NgScenario; title: string; repo: string; bead: string; age: number; chain?: string; fresh?: boolean; tweak?: (i: any, b: ItemBundle) => void };
+/** `fresh`: filed paused and never started, so it has no history at all (only `work_item_created`), whatever `sc` ran.
+ *  `spend`: a capped row its spend cap stopped (ngItems.ts). */
+type Row = { sc: NgScenario; title: string; repo: string; bead: string; age: number; chain?: string; fresh?: boolean; spend?: boolean; tweak?: (i: any, b: ItemBundle) => void };
 
 const R = (name: string) => `/Users/dev/code/${name}`;
 const LONG_R = (name: string) => `/Volumes/Work/clients/acme-corporation/monorepo/services/${name}-with-a-long-checkout-path`;
 
-/** The capped sample stopped instead by its $5 spend cap: its stop, its last event and its spend all say so. `board._stop`
- *  names a budget stop's scope; `work_item` is the item's own cap, the one `/budget/raise` takes. */
-/** The capped sample's session ran to its end instead: no time cap was reached. */
-function noTimeCap(b: ItemBundle) {
+/** The capped sample's session ran to its end instead: no time cap was reached, and it ended after 90 minutes, inside
+ *  the 96 every successful implementer run on record took at most (`config/library.yaml`), half an hour short of the
+ *  implementer's 120-minute cap. Its exit and what follows it move back with it, and its node's and the item's wall time
+ *  with its own. */
+function noTimeCap(i: any, b: ItemBundle) {
+  const cut = 30 * 60_000;
+  const s = b.sessions.find((x) => x.status === "capped_out")!;
   b.events = b.events.filter((e) => e.type !== "time_cap_reached");
+  const exit = b.events.findIndex((e) => e.type === "worker_session_exited" && e.payload.session_id === s.id);
+  for (const e of b.events.slice(exit)) e.created_at = new Date(Date.parse(e.created_at) - cut).toISOString();
+  Object.assign(s, { wall_ms: s.wall_ms - cut, exited_at: b.events[exit].created_at });
+  b.events[exit].payload.wall_ms = s.wall_ms;
+  for (const r of [i.usage.total, ...i.usage.by_node.filter((x: any) => x.node === s.node_id)]) r.wall_ms -= cut;
   b.events.forEach((e, n) => { e.seq = n + 1; });
 }
 
+/** The capped sample's implementer ran to its end instead: it reported the rest of its plan's tasks before it exited,
+ *  each stamped between the last it had reported and its exit, so it committed every task's file (ngContent.ts
+ *  `changedFiles`). A moved checkout stops the item after the task ran (`inplace.check_task`), so it does not cut the
+ *  plan short. */
+function finishedPlan(b: ItemBundle) {
+  const told = b.events.filter((e) => e.type === "plan_progress");
+  const last = told.at(-1)!;
+  const s = b.sessions.find((x) => x.hook_point === "implementation.main.implement")!;
+  const exit = b.events.find((e) => e.type === "worker_session_exited" && e.payload.session_id === s.id)!;
+  const plan = planOf(b.item.materialized_chain, b.content);
+  const rest = plan.slice(told.length);
+  const from = Date.parse(last.created_at);
+  const step = (Date.parse(exit.created_at) - from) / (rest.length + 1);
+  b.events.splice(b.events.indexOf(last) + 1, 0, ...rest.map((title, k) => ({ ...last, payload: { ...last.payload, task: told.length + k + 1, title }, created_at: new Date(from + step * (k + 1)).toISOString() })));
+  b.events.forEach((e, n) => { e.seq = n + 1; });
+}
+
+/** The capped sample stopped instead by its $5 spend cap, on verification before its code review launched (ngItems.ts,
+ *  `spend`): its stop, its last event and its spend all say so. `board._stop` names a budget stop's scope; `work_item` is
+ *  the item's own cap, the one `/budget/raise` takes. */
 function spendCapped(i: any, b: ItemBundle) {
   const reason = "budget cap reached: $5.00 spent on this work item, cap $5.00. Nothing new was started; a running agent was not interrupted.";
-  noTimeCap(b);
   // A budget stop names its scope (`board._stop`).
   i.stop = { ...i.stop, kind: "budget", reason, facts: {}, scope: "work_item" };
   const last = [...b.events].reverse().find((e) => e.type === "work_item_needs_human")!;
@@ -48,22 +78,15 @@ function spendCapped(i: any, b: ItemBundle) {
   const reads = (ss: any[]) => ss.reduce((a, s) => a + (s.tokens_cache_read ?? 0), 0);
   i.usage = { ...i.usage, total: { ...i.usage.total, cost_usd: sum(b.sessions), tokens_cache_read: reads(b.sessions) }, by_node: i.usage.by_node.map((r: any) => ({ ...r, cost_usd: sum(b.sessions.filter((s) => s.node_id === r.node)), tokens_cache_read: reads(b.sessions.filter((s) => s.node_id === r.node)) })) };
   i.budget_cap = { ...i.budget_cap, cap_usd: 5, spent_usd: 5 };
-  // A spend cap interrupts nothing: the session that spent the last of it ran to its end (done, its summary written,
-  // its usage on its `worker_session_exited` as `store.session_exited` writes it), and the walk stopped before the next
-  // agent task launched (`dispatch.over_budget`). No session is capped out: that is a time cap's or a loop's mark.
-  for (const s of b.sessions.filter((x) => x.status === "capped_out")) {
-    Object.assign(s, { status: "done", session_summary_ref: `items/${i.id}/sessions/${s.id}/out/summary.md` });
-    const exit = b.events.find((e) => e.type === "worker_session_exited" && e.payload.session_id === s.id)!;
-    exit.payload = { session_id: s.id, status: "done", wall_ms: s.wall_ms, model: s.model, tokens_in: s.tokens_in, tokens_cache_write: s.tokens_cache_write, tokens_cache_read: s.tokens_cache_read, tokens_out: s.tokens_out, cost_usd: s.cost_usd };
-  }
 }
 
-/** An in-place item whose checkout moved to main while its review ran (`inplace.check_task`): Kraft switched the
+/** An in-place item whose checkout moved to main while its implementer ran (`inplace.check_task`): Kraft switched the
  *  person's checkout onto the item's branch before the task (`checkout_switched`), the session ran to its end, and the
  *  item stopped for the person instead of switching the checkout back. Built on the capped sample's attempt. */
 function checkoutMoved(i: any, b: ItemBundle) {
   const s = b.sessions.find((x) => x.status === "capped_out")!;
-  noTimeCap(b);
+  noTimeCap(i, b);
+  finishedPlan(b);
   Object.assign(s, { status: "done", session_summary_ref: `items/${i.id}/sessions/${s.id}/out/summary.md` });
   const exit = b.events.find((e) => e.type === "worker_session_exited" && e.payload.session_id === s.id)!;
   exit.payload = { ...exit.payload, status: "done" };
@@ -82,7 +105,9 @@ function checkoutMoved(i: any, b: ItemBundle) {
 
 /** The running row, in kraft-vscode's own checkout: what `waitsForCheckout` waits behind. */
 function runsInPlace(i: any) {
-  i.progress = { current: 2, total: 3, title: "Thread findings into the prompt" };
+  // On verification's code review: no plan progress, which the board sends only while the item runs its implementation
+  // node (`progress.for_item`).
+  i.progress = null;
   i.step = { index: 2, count: 2, name: "review", task: "code_review" };
   Object.assign(i, { in_place: true, worktree_path: i.repo });
 }
@@ -99,7 +124,7 @@ const ROWS: Row[] = [
   { sc: "needs-gate", title: "Design the caching layer for document search", repo: "kraft-plugins", bead: "kraft-cb59", age: 4 },
   { sc: "capped", title: "Fix flaky retry test in the worker pool", repo: "kraft-core", bead: "kraft-7d21", age: 22 },
   { sc: "needs-you", title: "Add rate limit headers to the public API", repo: "kraft-api", bead: "kraft-a3f0", age: 60 },
-  { sc: "capped", title: "Migrate the config loader to pydantic v2", repo: "kraft-core", bead: "kraft-58e2", age: 120, tweak: spendCapped },
+  { sc: "capped", title: "Migrate the config loader to pydantic v2", repo: "kraft-core", bead: "kraft-58e2", age: 120, spend: true, tweak: spendCapped },
   { sc: "failed", title: "Retry on 429 from the forge API", repo: "kraft-api", bead: "kraft-b108", age: 40 },
   { sc: "paused", title: "Trim the review prompts for the docs chain", repo: "kraft-docs", bead: "kraft-4e19", age: 75, chain: "docs_only" },
   { sc: "running", title: "Bump the VS Code extension to schema v4", repo: "kraft-vscode", bead: "kraft-91bc", age: 6, tweak: runsInPlace },
@@ -128,22 +153,51 @@ const ARCHIVED: Row[] = [
 
 const LONG_TAIL = " so the board has to ellipsize a title that runs far past the row's width without pushing the ticks or the action off it";
 
+const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+/** Every moment in `o` moved by `by(ms)`, but a retry or a resume still to come: what the item waits for stays put. */
+function shift(o: any, by: (ms: number) => number, now: number, key = ""): any {
+  if (typeof o === "string") return ISO.test(o) && !(["retry_at", "resume_at"].includes(key) && Date.parse(o) > now) ? new Date(by(Date.parse(o))).toISOString() : o;
+  if (o && typeof o === "object") for (const k of Object.keys(o)) o[k] = shift(o[k], by, now, Array.isArray(o) ? key : k);
+  return o;
+}
+/** The item's history retimed: a person took `wait` minutes longer over each gate they approved (nothing runs while a
+ *  gate waits), and then all of it moved so its last event is at `end`. */
+function retime(b: ItemBundle, wait: number, end: number) {
+  const now = Date.parse(NG_NOW);
+  const approved = b.events.filter((e) => e.type === "gate_approved" && e.payload.by === "human").map((e) => Date.parse(e.created_at));
+  const longer = (ms: number) => ms + approved.filter((a) => a <= ms).length * wait * 60_000;
+  const last = longer(Date.parse(b.events.at(-1)!.created_at));
+  shift(b, (ms) => longer(ms) + end - last, now);
+}
+
 function build(rows: Row[], variant: Variant, seed0: number, bundles: Record<string, ItemBundle>): string[] {
   const long = variant === "long";
   return rows.map((r, n) => {
-    const b = r.fresh ? buildNeverStarted(seed0 + n, long ? "long" : "default", r.chain) : buildNgItem(r.sc, seed0 + n, long ? "long" : "default", r.chain);
+    // Its own brief, files and merge request, in the default sample (ngContent.ts).
+    const content = variant === "default" ? CONTENT[r.bead] : undefined;
+    const b = r.fresh ? buildNeverStarted(seed0 + n, long ? "long" : "default", r.chain) : buildNgItem(r.sc, seed0 + n, long ? "long" : "default", r.chain, content && mrOf(r.repo, content.mr), content, { spend: r.spend });
     const i = b.item;
     i.id = hex(seed0 + n);
     i.title = long ? r.title + LONG_TAIL : r.title;
     i.repo = (long ? LONG_R : R)(r.repo);
     i.bead_id = r.bead;
-    i.updated_at = t(130 - r.age);
-    i.created_at = t(130 - r.age - 90);
-    if (i.archived_at) i.archived_at = t(130 - r.age + 30);
+    if (content) b.content = content;
     r.tweak?.(i, b);
+    // Its history ends when it was last touched, so each item has run for its own time: from its first node to the
+    // clock, or to its last event once it has ended.
+    const ran = content && b.events.length > 0;
+    if (ran) retime(b, (n * 7) % 19, Date.parse(t(130 - r.age)));
+    i.updated_at = t(130 - r.age);
+    i.created_at = ran ? b.events[0].created_at : t(130 - r.age - 90);
+    if (i.archived_at) i.archived_at = t(130 - r.age + 30);
+    if (ran) {
+      i.started_at = b.events.find((e) => e.type === "node_started")?.created_at ?? null;
+      if (["completed", "abandoned"].includes(i.status)) i.ended_at = b.events.at(-1)!.created_at;
+    }
+    if (content) i.description = content.description;
     for (const s of b.sessions) s.work_item_id = i.id;
-    // Its own repo where an event names one (`work_item_created`, `branch_pushed`).
-    for (const e of b.events) { e.work_item_id = i.id; if (e.payload.repo) e.payload.repo = i.repo; }
+    // Its own repo and title where an event names one (`work_item_created`, `branch_pushed`).
+    for (const e of b.events) { e.work_item_id = i.id; if (e.payload.repo) e.payload.repo = i.repo; if (e.type === "work_item_created") e.payload.title = i.title; }
     if (r.fresh) b.events.push({ seq: 1, work_item_id: i.id, type: "work_item_created", payload: { title: i.title, repo: i.repo, chain_template: i.chain_template }, node_id: null, created_at: i.created_at });
     bundles[i.id] = b;
     return i.id;

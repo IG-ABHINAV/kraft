@@ -127,7 +127,8 @@ describe("one step", () => {
       ["worker_session_exited", { session_id: expect.any(String), status: "done", wall_ms: expect.any(Number) }],
       ["worker_session_created", expect.objectContaining({ node_id: "draft_merge_request", hook_point: "draft_merge_request.open.open", attempt: 2 })],
       ["branch_pushed", expect.objectContaining({ node_id: "draft_merge_request" })],
-      ["mr_opened", { number: 150, url: "https://github.com/acme/kraft-api/pull/150" }],
+      // Its own merge request (ngContent.ts), on its repo's GitLab (NG_REPOS, the shared-gl account).
+      ["mr_opened", { number: 125, url: "https://code.corp.example/gitlab/acme/kraft-api/-/merge_requests/125" }],
     ]);
     expect(ticks(1, id)).toEqual([
       ["worker_session_exited", { session_id: expect.any(String), status: "done", wall_ms: expect.any(Number) }],
@@ -147,7 +148,7 @@ describe("one step", () => {
     // No node is left standing finished: the tick that completed it entered the next.
     expect(S.bundles[id].item).toMatchObject({ current_node_id: "merge_request_feedback", status: "waiting", display_status: "waiting", stop: { kind: "wait", reason: null } });
     expect(S.bundles[id].sessions.filter((s) => s.node_id === "draft_merge_request").slice(-2).map((s) => [s.status, s.cost_usd])).toEqual([["done", null], ["done", null]]);
-    expect(S.bundles[id].item.mr_ref).toEqual({ number: 150, url: "https://github.com/acme/kraft-api/pull/150" });
+    expect(S.bundles[id].item.mr_ref).toEqual({ number: 125, url: "https://code.corp.example/gitlab/acme/kraft-api/-/merge_requests/125" });
     expect(S.bundles[id].events.find((e) => e.type === "mr_opened")?.node_id).toBe("draft_merge_request");
   });
 
@@ -236,6 +237,21 @@ describe("after the visitor", () => {
     expect(S.bundles[id].sessions.filter((s) => s.node_id === "post_merge_ci").map((s) => [s.hook_point, s.status])).toEqual([["post_merge_ci.main.await", "done"]]);
     expect(S.bundles[id].item).toMatchObject({ status: "completed", display_status: "done", pending_gate: null });
     expect(ticks(3, id)).toEqual([]);
+  });
+
+  // `_pending_gate_doc`: the gate's document is listed in place of the copy an earlier approval indexed at its path.
+  it("a gate asked again after a rejection lists its document once, the pending one first, not beside the copy its earlier approval filed", async () => {
+    const { S, ticks, call } = started();
+    const id = board(S, GATED);
+    const filed = S.docs[id].find((d) => d.path === `items/${id}/docs/work_brief.md`);
+    expect(filed).toBeDefined();
+    await call("POST", `/work-items/${id}/gates/final_review/reject`, { note: "again" });
+    for (let k = 0; k < 40 && S.bundles[id].item.pending_gate !== "local_review"; k++) ticks(1, id);
+    expect(S.bundles[id].item.pending_gate).toBe("local_review");
+    const docs = (await call("GET", `/work-items/${id}/documents`)).body.documents;
+    const paths = docs.map((d: any) => d.path);
+    expect(paths.filter((p: string, k: number) => paths.indexOf(p) !== k)).toEqual([]);
+    expect([docs[0].document_id, docs[0].path, docs.some((d: any) => d.document_id === filed!.document_id)]).toEqual([`gate:${id}:local_review`, filed!.path, false]);
   });
 
   it("reject sends it back to the gate's reject_to, which runs again", async () => {
@@ -536,6 +552,34 @@ describe("the clock and the purse", () => {
     expect(types(ticks(1, id))).toEqual(["node_started", "worker_session_created", "worker_session_started"]);
   });
 
+  // `_stopped_step`: its tests passed before the cap stopped it, so the retry the raise makes goes on at its code review.
+  // Their sessions are still the round's (`collect_findings` reads round 0's rows), so the measurement counts them.
+  it("the spend-capped sample, raised, runs only its code review: its tests are not paid for again", async () => {
+    const { S, ticks, call } = started();
+    const id = board(S, "kraft-58e2");
+    const b = S.bundles[id];
+    const had = b.sessions.length;
+    expect((await call("POST", `/work-items/${id}/budget/raise`, { budget_usd: 40 })).body).toMatchObject({ node_id: "verification", path: "verification.review", attempt: 1 });
+    expect(types(ticks(1, id))).toEqual(["node_started", "worker_session_created", "worker_session_started"]);
+    expect(ticks(1, id).filter(([t]) => ["findings_measured", "node_completed", "node_started"].includes(t))).toEqual([
+      ["findings_measured", expect.objectContaining({ measured_tasks: ["verification.review.code_review", "verification.tests.test_changed_scopes"], unmeasured_tasks: [] })],
+      ["node_completed", { node_id: "verification" }],
+      ["node_started", { node_id: "work_brief" }],
+    ]);
+    expect(b.sessions.slice(had).filter((s) => s.node_id === "verification").map((s) => [s.hook_point, s.attempt])).toEqual([["verification.review.code_review", 1]]);
+  });
+  // `RunFork.start` holds only until the node completes: a rejection that walks back through it runs every step again.
+  it("the raised sample, sent back from its review gate, runs its tests again", async () => {
+    const { S, ticks, call } = started();
+    const id = board(S, "kraft-58e2");
+    const b = S.bundles[id];
+    await call("POST", `/work-items/${id}/budget/raise`, { budget_usd: 40 });
+    for (let k = 0; k < 20 && b.item.pending_gate !== "local_review"; k++) ticks(1, id);
+    const had = b.sessions.length;
+    await call("POST", `/work-items/${id}/gates/local_review/reject`, { note: "again" });
+    for (let k = 0; k < 20 && !b.sessions.slice(had).some((s) => s.hook_point === "verification.review.code_review"); k++) ticks(1, id);
+    expect([...new Set(b.sessions.slice(had).filter((s) => s.node_id === "verification").map((s) => s.hook_point))]).toEqual(["verification.tests.test_changed_scopes", "verification.review.code_review"]);
+  });
   it("checks the cap at every agent launch, one in the middle of a node too: the tests run, the code review does not", async () => {
     const { S, ticks, call } = started();
     const id = board(S, RUNNING);
@@ -551,6 +595,9 @@ describe("the clock and the purse", () => {
       ["work_item_needs_human", expect.objectContaining({ node_id: "verification", kind: "budget" })],
     ]);
     expect(b.sessions.at(-1)).toMatchObject({ hook_point: "verification.tests.test_changed_scopes", status: "done" });
+    // Its stop's task and attempt are the node's latest session's, and its step that session's (`board._stop`, `_step_of`);
+    // the step cursor is the code review's, recorded before the cap check refused it (`set_current_step`).
+    expect([b.item.stop.task, b.item.stop.attempt, b.item.step, b.item.summary.step, b.item.current_step]).toEqual(["verification.tests.test_changed_scopes", b.sessions.at(-1).attempt, { index: 1, count: 2, name: "tests", task: "test_changed_scopes" }, { index: 1, count: 2 }, 1]);
   });
 
   it("checks the cap before a steer's queued attempt starts too", async () => {
@@ -599,7 +646,9 @@ describe("an escalation turn", () => {
     // The item stays as it stopped, its thread ended with its turn.
     expect((await call("GET", `/work-items/${id}`)).body).toMatchObject({ status: "needs_human", display_status: shown, escalation_threads: [{ thread: 1, session_id: s.id, status: "done", ended_at: NG_NOW }] });
     // The indexer files the summary as the item's document, the one the task's Output links by its path.
-    const docs = (await call("GET", `/work-items/${id}/documents`)).body.documents;
+    // Beside the documents its nodes and earlier sessions wrote, one at the thread's path.
+    const at = async () => (await call("GET", `/work-items/${id}/documents`)).body.documents.filter((d: any) => d.path === ref);
+    const docs = await at();
     expect(docs).toEqual([expect.objectContaining({ path: ref, title: `Escalation reply on ${node}`, kind: "sessions", source_kind: "session_summary", node_id: node, hook_point: "escalation", worker_session_id: s.id, session_status: "done" })]);
     const doc = (await call("GET", `/documents/${docs[0].document_id}`)).body;
     expect([doc.title, doc.metadata, doc.source_created_at, doc.source_updated_at]).toEqual([`Escalation reply on ${node}`, {}, null, null]);
@@ -609,11 +658,16 @@ describe("an escalation turn", () => {
     expect(recent(b.events as any).map((l) => l.line)).toContain("escalation answered");
     // The thread's turns so far: kraft-a3f0's had two before the visitor's.
     const turns = b.sessions.filter((x) => x.hook_point === "escalation").length;
+    const others = async () => (await call("GET", `/work-items/${id}/documents`)).body.documents.filter((d: any) => d.path !== ref).map((d: any) => d.path);
+    const before = await others();
+    expect(before.length).toBeGreaterThan(0);
     expect((await call("POST", `/work-items/${id}/escalate`, { message: "go on" })).status).toBe(200);
     expect([s.session_summary_ref, b.events.filter((e) => e.type === "escalation_message").at(-1)?.payload]).toEqual([`items/${id}/sessions/${s.id}/out/summary.md`, expect.objectContaining({ thread: 1, turn: turns + 1 })]);
     ticks(2, id);
     // That turn's summary is filed at the thread's path again: one document, the newest turn's.
-    expect((await call("GET", `/work-items/${id}/documents`)).body.documents).toEqual([expect.objectContaining({ document_id: docs[0].document_id, path: ref, worker_session_id: b.sessions.at(-1)!.id })]);
+    expect(await at()).toEqual([expect.objectContaining({ document_id: docs[0].document_id, path: ref, worker_session_id: b.sessions.at(-1)!.id })]);
+    // Its other documents are as they were: the turn filed its own and dropped none.
+    expect(await others()).toEqual(before);
   });
 
   it("a turn the visitor stopped (Stop agent) is not ended again", async () => {
@@ -623,7 +677,7 @@ describe("an escalation turn", () => {
     ticks(1, id);
     expect((await call("POST", `/work-items/${id}/escalate/stop`)).status).toBe(200);
     expect(ticks(3, id)).toEqual([]);
-    expect([s.status, s.session_summary_ref, S.docs[id]]).toEqual(["paused", null, []]);
+    expect([s.status, s.session_summary_ref, S.docs[id].filter((d) => d.hook_point === "escalation")]).toEqual(["paused", null, []]);
   });
 });
 
