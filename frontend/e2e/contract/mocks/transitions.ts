@@ -4,7 +4,7 @@ import { ngDryRun } from "./ngBoard";
 import { chainOf, frozenOf } from "./ngChain";
 import { RESUME_PROMPT } from "./poller";
 import { buildNeverStarted } from "./ngItems";
-import { DOCS_SCOPE, isAgentSession, MODEL, RUNS, scopeRunsOf, taskRun, type Run } from "./taskKinds";
+import { DOCS_SCOPE, isAgentSession, MODEL, RUNS, runningS, scopeRunsOf, taskRun, type Run } from "./taskKinds";
 import { ownFailure } from "./nodeRecipe";
 import { changedFiles, isLate, itemDocs, mergeDocs, mrOf, planOf } from "./ngContent";
 
@@ -252,13 +252,20 @@ export function transitions(S: Scenario, o: TransitionOptions = {}) {
   const stopSessions = (b: ItemBundle): string[] => {
     // `store.running_sessions_for_node`: the current node's, and an escalation turn's on any node.
     const live = b.sessions.filter((s) => (s.node_id === b.item.current_node_id || s.hook_point === "escalation") && LIVE_SESSION_STATUSES.includes(s.status));
-    for (const s of live) Object.assign(s, { status: "paused", exited_at: now() });
+    for (const s of live) cutOff(b, s);
     return live.map((s) => s.id);
+  };
+  /** `s` marked paused, and, an agent's on an item with content, its log as it stood then: its first sub-agent still at
+   *  work, the rest done inside the time it ran. */
+  const cutOff = (b: ItemBundle, s: any) => {
+    Object.assign(s, { status: "paused", exited_at: now() });
+    const wall_ms = Math.max(0, Date.parse(s.exited_at) - Date.parse(s.started_at ?? s.created_at));
+    if (b.content && isAgentSession(b.item.materialized_chain, s.hook_point, !!s.model)) b.logs[s.id] = logLines(s.id, 12, false, { content: b.content, hook: s.hook_point, status: "running", wall_ms });
   };
   /** `store.running_sessions_under`: the live sessions of a task or step, marked paused. */
   const stopUnder = (b: ItemBundle, scope: string): string[] => {
     const live = b.sessions.filter((s) => (s.hook_point === scope || String(s.hook_point).startsWith(`${scope}.`)) && LIVE_SESSION_STATUSES.includes(s.status));
-    for (const s of live) Object.assign(s, { status: "paused", exited_at: now() });
+    for (const s of live) cutOff(b, s);
     return live.map((s) => s.id);
   };
   /** `store.forks.fork_run` for a retry of `target`, or of one of its steps (`step`, `node.step`): every gate from it on
@@ -551,7 +558,7 @@ export function transitions(S: Scenario, o: TransitionOptions = {}) {
       const attempt = b.sessions.filter((s) => s.node_id === node && s.hook_point === "escalation").length + 1;
       // An agent's turn whatever the task it was asked about was: its row is not the last session's (a test command's has no model).
       b.sessions.push({ ...from, id: sid, work_item_id: id, node_id: node, hook_point: "escalation", status: "running", attempt, round: 0, thread, created_at: now(), started_at: now(), exited_at: null, tokens_in: null, tokens_out: null, cost_usd: null, wall_ms: null, session_summary_ref: null, model: MODEL, harness: "claude", command: null });
-      b.logs[sid] = logLines(sid, 12, false);
+      b.logs[sid] = logLines(sid, 12, false, { content: b.content, hook: "escalation", status: "running" });
       // `escalate.dispatch`: the message first, then the turn's session, born and launched as every agent task's is.
       append(id, "escalation_message", { session_id: sid, message: message.trim(), auto: false, thread, turn }, node);
       append(id, "worker_session_created", { session_id: sid, node_id: node, hook_point: "escalation", round: 0, attempt, thread });
@@ -691,7 +698,7 @@ export function transitions(S: Scenario, o: TransitionOptions = {}) {
         harness: agent ? "claude" : null, command: (typeof run === "string" ? RUNS[run] : run)?.command ?? null,
         created_at: now(), started_at: now(), exited_at: null, tokens_in: null, tokens_out: null, cost_usd: null, wall_ms: null, session_summary_ref: null,
       });
-      b.logs[sid] = o.noAgent ? [] : sessionLog(agent, run, sid, 12, false, "running", task, it.mr_ref?.url);
+      b.logs[sid] = o.noAgent ? [] : agent && b.content ? logLines(sid, 12, false, { content: b.content, hook: hookPoint, status: "running" }) : sessionLog(agent, run, sid, 12, false, "running", task, it.mr_ref?.url);
       append(id, "worker_session_created", { session_id: sid, node_id: node, hook_point: hookPoint, round, attempt, thread: 1 });
       // `dispatch` records the step before it runs (`set_current_step`); a fix loop's task is in none.
       const at = stepIndex(it.chain_definition?.nodes ?? [], node, hookPoint);
@@ -734,8 +741,10 @@ export function transitions(S: Scenario, o: TransitionOptions = {}) {
       const status = o.status ?? "done";
       // COALESCE: no summary leaves the one already recorded.
       if (summary) s.session_summary_ref = summary;
+      Object.assign(s, { status, exited_at: at, wall_ms });
+      // `caps.running_time` reads the item's sessions again: this one's wall now counts, unless it was a forge wait.
+      if (it.running_time) it.running_time = { ...it.running_time, running_s: runningS(it.materialized_chain, b.sessions) };
       if (!usage) {
-        Object.assign(s, { status, exited_at: at, wall_ms });
         // A command's log has grown to all of its output by the time it ends, the failing run's if it failed.
         const task = String(s.hook_point).split(".").at(-1)!;
         if (o.noAgent) b.logs[sid] = [{ n: 1, t: at, src: "stdout", text: "no bot feedback collected; no agent started" }];
@@ -746,6 +755,8 @@ export function transitions(S: Scenario, o: TransitionOptions = {}) {
       }
       const cache = { tokens_cache_write: usage.tokens_cache_write ?? 0, tokens_cache_read: usage.tokens_cache_read ?? 0 };
       Object.assign(s, { status, exited_at: at, wall_ms, ...usage, ...cache });
+      // An agent on an item with content: its sub-agents have all answered by now.
+      if (b.content) b.logs[sid] = logLines(sid, 12, false, { content: b.content, hook: s.hook_point, status, wall_ms });
       const u = it.usage;
       if (u) {
         const add = (r: any) => ({ ...r, tokens_in: r.tokens_in + usage.tokens_in, tokens_cache_write: (r.tokens_cache_write ?? 0) + cache.tokens_cache_write, tokens_cache_read: (r.tokens_cache_read ?? 0) + cache.tokens_cache_read, tokens_out: r.tokens_out + usage.tokens_out, cost_usd: dollars(r.cost_usd + usage.cost_usd), wall_ms: r.wall_ms + wall_ms, sessions: r.sessions + 1 });

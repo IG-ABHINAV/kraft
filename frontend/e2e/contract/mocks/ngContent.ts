@@ -27,7 +27,14 @@ export const isLate = (f: File) => f.slice(3).includes("late");
 /** A docs path: a page anywhere, or a site file under `docs/` (its pages, navigation, styles, scripts and layouts); a
  *  program under `docs/` (`docs/_nav.py`) is code. */
 export const isDocsPath = (p: string) => p.endsWith(".md") || (p.startsWith("docs/") && /\.(md|ya?ml|css|js|html|svg|png)$/.test(p));
-const statusOf = (f: File) => (f.slice(3).includes("new") ? "new" : f.slice(3).includes("deleted") ? "deleted" : null);
+/** How big an item's change is, against a typical one's 1: its lines changed and ten for each file it touches, over
+ *  150; a docs item's half that, prose being cheaper to write than code. An item with no content of its own is 1.
+ *  shortcut: the ten a file is what tells two items that changed as many lines apart, and it can put an item that
+ *  changed fewer lines in more files above one that changed more (coherence.test.ts holds spend to lines); a new row
+ *  that does so needs its counts or the weight moved. */
+export const sizeOf = (c?: Content) =>
+  c ? (c.files.reduce((a, [, ins, del]) => a + ins + del + 10, 0) / 150) * (c.files.every(([p]) => isDocsPath(p)) ? 0.5 : 1) : 1;
+export const statusOf = (f: File) => (f.slice(3).includes("new") ? "new" : f.slice(3).includes("deleted") ? "deleted" : null);
 
 /** By bead: the 24 board rows. Merge request numbers count up with the item's age; none is in 150-159, which the
  *  walk gives an item it has no entry for (`transitions.mrOpened`). */
@@ -59,7 +66,7 @@ export const CONTENT: Record<string, Content> = {
   "kraft-e410": { mr: 136, description: "The sandbox keys in policy.yaml have no page of their own: people find them by reading the defaults file. Write a reference page that gives each key its default and what it changes, and link it from the policy guide.",
     files: [["docs/reference/policy-sandbox.md", 96, 0, "new"], ["docs/guides/policy.md", 8, 2], ["docs/reference/index.md", 1, 0], ["docs/_nav.yml", 2, 0]] },
   "kraft-2c77": { mr: 127, description: "A chain that fans out across a workspace's repos runs the linter once per member, and a member with no lint config fails the whole fan-out. Skip a member with nothing to lint, run the rest in parallel, and report each member's findings under its own name.",
-    files: [["plugins/lint/fanout.py", 52, 18], ["plugins/lint/members.py", 23, 0, "new"], ["plugins/lint/report.py", 17, 9], ["plugins/lint/plugin.yaml", 4, 1], ["tests/lint/test_fanout.py", 61, 0, "new"], ["tests/lint/test_report.py", 10, 2, "late"]] },
+    files: [["plugins/lint/fanout.py", 52, 18], ["plugins/lint/members.py", 23, 0, "new"], ["plugins/lint/report.py", 17, 9], ["plugins/lint/plugin.yaml", 4, 1], ["tests/lint/test_fanout.py", 61, 0, "new"], ["docs/lint.md", 14, 3], ["tests/lint/test_report.py", 10, 2, "late"]] },
   "kraft-f5d3": { mr: 118, description: "The console polls a session's log every second, which is slow to show a fast agent and busy when nothing changes. Try serving the log as server-sent events from the existing tail, and measure what it does to the console before deciding whether to keep it.",
     files: [["kraft/api/routes/log_stream.py", 58, 0, "new"], ["kraft/logs/tail.py", 21, 6], ["kraft/console/log_view.py", 17, 11], ["tests/api/test_log_stream.py", 39, 0, "new"]] },
   "kraft-3a90": { mr: 112, description: "Collect what changed since the last release into its notes: the new board filters, the forge retry and the removed poller flags. Each entry says what a person sees, and links the page that explains it.",
@@ -89,7 +96,7 @@ export const CONTENT: Record<string, Content> = {
   "kraft-d7e4": { mr: 64, description: "kraft admin reload rereads the library, policy.yaml and intake.yaml without a restart, but the docs mention it only in passing. Give it a section in the CLI reference that says what it rereads, what it leaves alone, and when to restart instead.",
     files: [["docs/cli/admin.md", 34, 1], ["docs/guides/configuration.md", 6, 2], ["docs/cli/index.md", 1, 0]] },
   "kraft-5c31": { mr: 61, description: "The webhook sender still builds the v0 payload beside the current one for receivers that asked for it, and none has in months. Remove the v0 builder and its setting, and refuse a subscription that still names it with a message that says what to send instead.",
-    files: [["kraft_api/webhooks/payloads.py", 4, 61], ["kraft_api/webhooks/subscribe.py", 11, 6], ["kraft_api/settings.py", 0, 7, "deleted"], ["tests/webhooks/test_payloads.py", 6, 48]] },
+    files: [["kraft_api/webhooks/payloads.py", 4, 76], ["kraft_api/webhooks/subscribe.py", 11, 6], ["kraft_api/settings.py", 0, 7, "deleted"], ["tests/webhooks/test_payloads.py", 6, 48]] },
 };
 
 /** By title: what live motion refiles (motion.ts FRESH_TITLES), so a walked item has a story of its own too, in the repo
@@ -150,8 +157,10 @@ export function changedFiles(b: ItemBundle): File[] {
 }
 
 const camelOf = (snake: string) => snake.replace(/_(\w)/g, (_, c) => c.toUpperCase());
-const isTest = (path: string) => /(^|\/)tests?\//.test(path) || /\.test\.[jt]sx?$/.test(path) || /(^|\/)test_[^/]+\.py$/.test(path);
+export const isTest = (path: string) => /(^|\/)tests?\//.test(path) || /\.test\.[jt]sx?$/.test(path) || /(^|\/)test_[^/]+\.py$/.test(path);
 const baseOf = (path: string) => path.split("/").pop()!.replace(/\.[^.]+$/, "").replace(/\.test$/, "");
+/** The function a file's hunk changes (`template`): its name in snake case in Python, camel case elsewhere. */
+export const symbolOf = (path: string) => { const snake = baseOf(path).replace(/[^A-Za-z0-9]+/g, "_").toLowerCase(); return path.endsWith(".py") ? snake : camelOf(snake); };
 /** How a test at `from` imports the module at `to`: up from its own folder to the one they share, then down. */
 function importPath(from: string, to: string) {
   const [a, b] = [from, to].map((p) => p.split("/").slice(0, -1));

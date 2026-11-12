@@ -1,17 +1,18 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { buildScenario, searchFor, withScopes, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
+import { buildScenario, searchFor, subagentList, withScopes, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
 import { FRESH_TITLES, motion } from "../e2e/contract/mocks/motion";
-import { NG_REPOS } from "../e2e/contract/mocks/ngBoard";
-import { CONTENT, docBody, FRESH_CONTENT, isDocsPath, isLate, mergeDocs, mrOf } from "../e2e/contract/mocks/ngContent";
+import { ngDryRun, NG_REPOS } from "../e2e/contract/mocks/ngBoard";
+import { CONTENT, docBody, FRESH_CONTENT, isDocsPath, isLate, mergeDocs, mrOf, sizeOf } from "../e2e/contract/mocks/ngContent";
 import { frozenOf } from "../e2e/contract/mocks/ngChain";
 import { AUTO_ESCALATE_MESSAGE, buildNgItem, MR_CLOSED_REASON, NG_NOW, renderNote } from "../e2e/contract/mocks/ngItems";
 import { agentUsage, openWait } from "../e2e/contract/mocks/nodeRecipe";
-import { isAgentSession, MODEL, nodeTasks, PRICE, RUNS, runOutput, taskKind, taskRun } from "../e2e/contract/mocks/taskKinds";
+import { isAgentSession, MODEL, nodeTasks, PRICE, RUNS, runningS, runOutput, taskKind, taskRun } from "../e2e/contract/mocks/taskKinds";
 import { transitions } from "../e2e/contract/mocks/transitions";
 import { mockServer, type Answer } from "../e2e/contract/mocks/mockApi";
 import { demoOptions } from "./scenario";
+import { elapsed } from "../src/format";
 
 /**
  * The third unit test that holds the demo's data to Kraft itself (`apiShapes.test.ts` holds its keys, `sampleCoverage.test.ts`
@@ -52,6 +53,18 @@ const noAgentTriage = (b: ItemBundle, s: any) =>
   s.hook_point === TRIAGE && s.status === "done" && s.model == null && s.cost_usd == null && logOf(b, s).map((l) => l.text).join("\n") === "no bot feedback collected; no agent started";
 const logOf = (b: ItemBundle, s: any): any[] => b.logs[s.id] ?? [];
 const lastSegment = (hook: string) => hook.split(".").at(-1)!;
+/** A session's sub-agents, as its `/subagents` route lists them. */
+const subagentsOf = (b: ItemBundle, s: any): any[] => subagentList(logOf(b, s), s.status);
+/** What an agent's session shows: its log's lines and their summaries, and its sub-agents' descriptions and answers. */
+const agentTexts = (b: ItemBundle, s: any): string[] =>
+  [...logOf(b, s).flatMap((l) => [l.text, l.summary]), ...subagentsOf(b, s).flatMap((a) => [a.description, a.summary])].filter((x): x is string => typeof x === "string");
+/** Every file `texts` name (a path or a bare file name) that is none of its item's own: neither one of its paths nor one's name. */
+const foreignFiles = (b: ItemBundle, texts: string[]) => {
+  const own = new Set(b.content!.files.flatMap(([p]) => [p, p.split("/").pop()!]));
+  return [...new Set(texts.flatMap((x) => x.match(/[\w./-]*\w\.(?:py|tsx?|jsx?|md|ya?ml|json|toml|css|html|service)\b/g) ?? []))].filter((f) => !own.has(f));
+};
+/** Every token a session's usage counts (`usage.KINDS`). */
+const usedBy = (s: any) => (s.tokens_in ?? 0) + (s.tokens_cache_write ?? 0) + (s.tokens_cache_read ?? 0) + (s.tokens_out ?? 0);
 /** `rule` is a way a session can be wrong; the bundles' offenders, readably, so a failure names the item and task. */
 const offenders = (S: Scenario, rule: (b: ItemBundle, s: any) => boolean) =>
   Object.values(S.bundles).flatMap((b) => b.sessions.filter((s) => rule(b, s)).map((s) => `${b.item.title}: ${s.hook_point} (${s.status})`));
@@ -63,6 +76,8 @@ const seeded = (seed: (S: Scenario) => void) => { const S = buildScenario("defau
 let walk: Scenario | null = null;
 /** Where the walk's clock stood when it stopped. */
 let walkedTo = NG_NOW;
+/** The walk's running agent sessions, at any tick, whose log or sub-agents named a file not their item's. */
+const walkStrays = new Set<string>();
 const walked = (): Scenario => {
   if (walk) return walk;
   vi.useFakeTimers();
@@ -79,6 +94,8 @@ const walked = (): Scenario => {
       for (const id of S.ngBoard) {
         const b = S.bundles[id];
         if (b.item.pending_gate && b.events.at(-1)?.type === "gate_auto_review_skipped") T.approve(id, b.item.pending_gate);
+        // A running agent's log is as a visitor sees it mid-walk: the end leaves only finished ones to check.
+        if (b.content) for (const s of b.sessions) if (s.status === "running" && agentic(b, s) && foreignFiles(b, agentTexts(b, s)).length) walkStrays.add(`${b.item.title}: ${s.hook_point}`);
       }
     }
     m.stop();
@@ -119,9 +136,58 @@ describe.each(SCENARIOS)("sessions in %s", (_scenario, build) => {
     // with no frozen chain, carry made-up figures and no cache split.
     ["an agent's cost is what its tokens cost, to a millionth of a dollar", (b, s) => !!b.item.materialized_chain && s.model === MODEL && s.cost_usd != null
       && !(Math.abs(Object.entries(PRICE).reduce((a, [k, usd]) => a + (s[k] ?? NaN) * usd / 1e6, 0) - s.cost_usd) < 1e-6)],
+    // An item with content: its agents' logs and sub-agents are about its own files; the shared sample's are not its.
+    ["an agent's log and sub-agents name only its item's own files", (b, s) => !!b.content && agentic(b, s) && foreignFiles(b, agentTexts(b, s)).length > 0],
+    // Its red test run names its own late file's test, its red docs check its own page (`ownFailure`).
+    ["a command's log on an item with content names only its item's own files", (b, s) => !!b.content && !agentic(b, s) && foreignFiles(b, logOf(b, s).map((l) => l.text)).length > 0],
+    ["a sub-agent is about one of its item's files, in its description and, once it has finished, its answer", (b, s) => !!b.content
+      && subagentsOf(b, s).some((a) => [a.description, ...(a.status === "completed" ? [a.summary] : [])].some((x) => !b.content!.files.some(([p]) => String(x).includes(p))))],
+    ["only the implementer, verification's repair and its code review hand work to sub-agents", (b, s) => !!b.content
+      && !["implementation.main.implement", "verification.fix_loop.main.repair", "verification.review.code_review"].includes(s.hook_point) && subagentsOf(b, s).length > 0],
+    // A code review changes, writes and commits nothing (`skills/code-review/SKILL.md`); an author, a reviewer or the judge reads.
+    ["only the implementer and verification's repair edit the item's files; every other agent reads them", (b, s) => !!b.content && agentic(b, s)
+      && !["implementation.main.implement", "verification.fix_loop.main.repair"].includes(s.hook_point) && logOf(b, s).some((l) => /"name":"Edit"|before I change it/.test(l.text))],
+    ["an agent before implementation reads no file the change adds", (b, s) => !!b.content && agentic(b, s) && /^(spec|plan|chain_revision)/.test(s.hook_point)
+      && logOf(b, s).some((l) => b.content!.files.some((f) => f.slice(3).includes("new") && String(l.text).includes(f[0])))],
+    // A sub-agent is a call inside its session: it cannot outlast it, and those of one session together leave it time of its own.
+    ["a stopped or finished session's sub-agents each ran inside it, together at most four fifths of it", (b, s) => {
+      const subs = b.content && !["running", "pending"].includes(s.status) ? subagentsOf(b, s) : [];
+      const wall = s.wall_ms ?? Date.parse(s.exited_at) - Date.parse(s.started_at ?? s.created_at);
+      return subs.some((a) => a.duration_ms > wall) || subs.reduce((n, a) => n + a.duration_ms, 0) > 0.8 * wall + subs.length;
+    }],
+    // Who calls a file, what it must keep and which tests cover it are questions about code that is there and stays.
+    ["a sub-agent asks for callers, what must be kept or covering tests only of existing code the change modifies", (b, s) => !!b.content && subagentsOf(b, s).some((a) => {
+      const m = String(a.description).match(/^(?:Find who calls \S+ in (\S+)|Check what (\S+) must keep|Find the tests that cover (\S+))$/);
+      const f = m && b.content!.files.find(([p]) => p === (m[1] ?? m[2] ?? m[3]));
+      return !!m && (!f || /(^|\/)tests?\/|(^|\/)test_|\.test\./.test(f[0]) || f.slice(3).some((x) => x === "new" || x === "deleted"));
+    })],
+    // A search for a file's function or name looks where it is used, not in the file itself (an item of one file has nowhere else).
+    ["a sub-agent's search looks for its subject outside the subject's own file", (b, s) => !!b.content && b.content.files.length > 2 && logOf(b, s).some((l) => {
+      const o = l.agent && l.src === "tool" ? JSON.parse(l.text) : null;
+      const bare = (x: string) => x.split("/").pop()!.replace(/\.[^.]+$/, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+      return o?.name === "Grep" && bare(o.input.path) === bare(o.input.pattern);
+    })],
+    ["a finished session's sub-agents have all finished", (b, s) => ["done", "done_with_concerns"].includes(s.status) && subagentsOf(b, s).some((a) => a.status !== "completed")],
+    ["a sub-agent spends no more tokens than its session", (b, s) => s.tokens_in != null && subagentsOf(b, s).some((a) => a.tokens > usedBy(s))],
+    // Its cache reads are what its cost leaves after the rest: a cost scaled down below its other tokens' leaves fewer than none.
+    ["no kind of token is counted below zero", (_b, s) => Object.keys(PRICE).some((k) => s[k] < 0)],
   ])("%s", (_rule, rule) => {
     expect(offenders(S, rule)).toEqual([]);
   });
+});
+
+it("a sub-agent's prompt is its description as it is written", async () => {
+  const S = buildScenario("default");
+  const b = S.ngBoard.map((id) => S.bundles[id]).find((x) => x.content && x.sessions.some((s) => subagentsOf(x, s).length))!;
+  const s = b.sessions.find((x) => subagentsOf(b, x).length)!;
+  const a = subagentsOf(b, s)[0];
+  const got = JSON.parse(((await mockServer(S, demoOptions)({ method: "GET", url: `http://demo/api/work-items/${b.item.id}/sessions/${s.id}/subagents/${a.id}`, json: () => null })) as Answer).body!);
+  expect(got.prompt).toBe(`${a.description}, and report what you find.`);
+});
+
+it("in the live walk, a running agent's log and sub-agents name only its item's own files at every tick", () => {
+  walked();
+  expect([...walkStrays]).toEqual([]);
 });
 
 /** The nodes each template's chain has: what a real server freezes for `default` and `quick-task`, and the board's own `docs_only`. */
@@ -264,6 +330,14 @@ describe.each(SCENARIOS)("items in %s", (_scenario, build) => {
   it("no two board items share a title", () => {
     const titles = [...S.ngBoard, ...S.ngArchived].map((id) => S.bundles[id].item.title);
     expect(titles.filter((x, k) => titles.indexOf(x) !== k)).toEqual([]);
+  });
+
+  it("no two board items' sub-agents share a description, and what its rounds measured names only its own files", () => {
+    const board = [...S.ngBoard, ...S.ngArchived].map((id) => S.bundles[id]).filter((b) => b.content);
+    const said = board.map((b) => new Set(b.sessions.flatMap((s) => subagentsOf(b, s).map((a) => a.description as string))));
+    expect(said.flatMap((d, k) => [...d].filter((x) => said.some((e, j) => j !== k && e.has(x))))).toEqual([]);
+    const measured = (b: ItemBundle) => b.events.filter((e) => e.type === "findings_measured").flatMap((e) => (e.payload.findings as any[]).map((f) => String(f.message)));
+    expect(board.map((b) => [b.item.title, foreignFiles(b, measured(b))]).filter(([, w]) => w.length)).toEqual([]);
   });
 });
 
@@ -911,6 +985,34 @@ describe.each<[string, () => Scenario, boolean]>([["the default sample", () => b
     expect([ended.length > 1, live.length > 1]).toEqual([true, true]);
     expect([ended.filter((x, k) => ended.indexOf(x) !== k), live.filter((x, k) => live.indexOf(x) !== k)]).toEqual([[], []]);
   });
+  // What a finished item's card shows: what it spent, to the cent, and how long its sessions took, as the card writes it.
+  const spentOf = (b: ItemBundle) => b.item.budget_cap.spent_usd.toFixed(2);
+  const tookOf = (b: ItemBundle) => elapsed(b.item.running_time.running_s * 1000);
+  const linesOf = (b: ItemBundle) => b.content!.files.reduce((a, [, ins, del]) => a + ins + del, 0);
+  const dups = (xs: string[]) => xs.filter((x, k) => xs.indexOf(x) !== k);
+  it.runIf(sample)("no two finished default-chain items show the same spend, nor the same time taken", () => {
+    const ended = board.filter((b) => ENDED_STATUSES.includes(b.item.status) && b.item.chain_template === "default");
+    expect(ended.length).toBeGreaterThan(3);
+    expect([dups(ended.map(spentOf)), dups(ended.map(tookOf))]).toEqual([[], []]);
+  });
+  // Spend follows the change: of two items that ran their chain to its end, the one that changed more lines spent more
+  // on the same chain, and a docs item spent and took less than a default-chain item that changed more.
+  it.runIf(sample)("an item that changed more lines spent more on its chain, and a docs item less than a bigger default one", () => {
+    const ran = board.filter((b) => completed(b, defIds(b).at(-1)!));
+    const chain = (c: string) => ran.filter((b) => b.item.chain_template === c).length;
+    expect([chain("default") > 4, chain("docs_only") > 1]).toEqual([true, true]);
+    const cents = (b: ItemBundle) => b.item.budget_cap.spent_usd;
+    const wrong = ran.flatMap((a) => ran.filter((b) => linesOf(a) < linesOf(b) && (a.item.chain_template === b.item.chain_template
+      ? !(cents(a) < cents(b))
+      : a.item.chain_template === "docs_only" && b.item.chain_template === "default" && !(cents(a) < cents(b) && a.item.running_time.running_s < b.item.running_time.running_s)))
+      .map((b) => `${a.item.bead_id} (${linesOf(a)} lines, ${spentOf(a)}) against ${b.item.bead_id} (${linesOf(b)} lines, ${spentOf(b)})`));
+    expect(wrong).toEqual([]);
+  });
+  // `work_item_usd` is the demo team's policy cap (ngBoard.ts `ngDryRun`); an item with a lower cap of its own stops at that.
+  it("every board item spent less than the demo team's cap", () => {
+    const cap = (ngDryRun({}).body as any).caps.budget_usd;
+    expect(board.filter((b) => !(b.item.budget_cap.spent_usd < cap)).map((b) => `${b.item.bead_id}: ${b.item.budget_cap.spent_usd}`)).toEqual([]);
+  });
 });
 
 /** The items a walk files when nothing else is on the board, `n` of them: each completed by a door the tick it is filed. */
@@ -937,6 +1039,21 @@ const longWalk = (n: number): ItemBundle[] => {
 
 // The indexer refiles what the item's nodes and sessions wrote, and leaves what came another way: a summary with a body
 // of its own (an escalation reply), and a document `itemDocs` does not make (one filed at intake, `_attachment_docs`).
+describe("sizeOf, and a small change's run", () => {
+  const one = (path: string, lines: number) => ({ mr: 70, description: "A small change.", files: [[path, lines, 0]] as any });
+  it("a docs change is half a code change of the same files, and a bigger one is bigger", () => {
+    expect([sizeOf(one("docs/a.md", 140)) * 2, sizeOf(one("kraft/a.py", 290)) > sizeOf(one("kraft/a.py", 140))]).toEqual([sizeOf(one("kraft/a.py", 140)), true]);
+  });
+  // Its run is short, so its implementer's reports crowd closer: each still lands before the session ends.
+  it("a two-file, twenty-line item's implementer reports every plan task before its session ends", () => {
+    const c = { ...one("kraft/a.py", 12), files: [["kraft/a.py", 12, 0], ["kraft/b.py", 8, 0]] as any };
+    const b = buildNgItem("done", 1998, "default", "default", mrOf("/Users/dev/code/kraft-core", 70), c);
+    const exit = b.events.findIndex((e) => e.type === "worker_session_exited" && b.sessions.find((s) => s.id === e.payload.session_id)?.hook_point === "implementation.main.implement");
+    const reports = b.events.flatMap((e, k) => (e.type === "plan_progress" ? [k] : []));
+    expect([reports.length, reports.every((k) => k < exit && b.events[k].created_at <= b.events[exit].created_at)]).toEqual([3, true]);
+  });
+});
+
 describe("mergeDocs", () => {
   const doc = (document_id: string, path: string, title = path) => ({ document_id, path, title });
   it.each<[string, any[], any[], Record<string, string>, string[]]>([
@@ -1156,6 +1273,18 @@ describe("the live walk runs each node as the sample's finished item ran it", ()
   it("walks both items it filed to the end of the default chain", () => {
     expect([0, 1].map((n) => [fresh(n).item.status, fresh(n).item.chain_template, [...byNode(fresh(n)).keys()]])).toEqual([0, 1].map(() => ["completed", "default", CHAIN_NODES.default]));
   });
+  // `caps.running_time`: what the done card's "took" reads, every session's wall but a forge wait's (`ForgeAction.waits`).
+  it("a board item, a walked one too, took its sessions' wall time, its forge waits' left out", () => {
+    const waits = ["mr.ci", "mr.automated_review", "mr.external_approval", "mr.merge", "mr.post_merge_ci", "ci.pipeline"];
+    const took = (b: ItemBundle) => Math.round(b.sessions.filter((s) => !waits.includes(taskRun(b.item.materialized_chain, s.hook_point) ?? "")).reduce((a, s) => a + (s.wall_ms ?? 0), 0) / 1000);
+    const board = S.ngBoard.map((id) => S.bundles[id]);
+    expect(board.filter((b) => b.item.running_time.running_s !== took(b)).map((b) => `${b.item.title}: ${b.item.running_time.running_s}, not ${took(b)}`)).toEqual([]);
+    expect([0, 1].map((n) => took(fresh(n)) > 0)).toEqual([true, true]);
+  });
+  it("two sessions that ran at once count once in an item's running time", () => {
+    const at = (min: number, wall_ms: number) => ({ hook_point: "x", started_at: new Date(Date.UTC(2026, 0, 1, 0, min)).toISOString(), wall_ms });
+    expect(runningS(null, [at(0, 120_000), at(1, 120_000), at(10, 30_000), { ...at(20, 0), wall_ms: null }])).toBe(210);
+  });
   // The seeds and the walk read one recipe (nodeRecipe.ts); this holds what each user does with it to the same events.
   // Each item reports its own plan's tasks, so how many plan_progress events it has is its own (the literal rows hold that).
   const unplanned = (types?: string[]) => types?.filter((x) => x !== "plan_progress");
@@ -1183,7 +1312,7 @@ describe("the live walk runs each node as the sample's finished item ran it", ()
       const agent = agentic(b, s);
       if ((s.harness === "claude") !== agent) return true;
       if (!agent || noAgentTriage(b, s)) return s.model != null || s.cost_usd != null || s.command !== commandOf(b, s);
-      const u = agentUsage(s.hook_point, b.sessions.indexOf(s));
+      const u = agentUsage(s.hook_point, b.sessions.indexOf(s), sizeOf(b.content));
       return s.model !== u.model || s.tokens_in !== u.tokens_in || s.tokens_out !== u.tokens_out || s.cost_usd !== u.cost_usd;
     }).map((s) => `${b.item.title}: ${s.hook_point}`));
     expect(wrong).toEqual([]);
@@ -1387,6 +1516,24 @@ describe("sessions the doors make", () => {
     expect(T.escalate(b.item.id, "again").status).toBe(200);
     expect(b.sessions.filter((s) => s.hook_point === "escalation")).toHaveLength(had + 2);
     expect(escalationMiscounts(b)).toEqual([]);
+    // On a board item, a turn's log is about that item, not the shared sample's.
+    const c = S.bundles[byBead(S, "kraft-cb59")];
+    expect(T.escalate(c.item.id, "look").status).toBe(200);
+    expect([c.sessions.at(-1)!.hook_point, foreignFiles(c, agentTexts(c, c.sessions.at(-1)))]).toEqual(["escalation", []]);
+  });
+
+  it("a pause leaves an agent's sub-agents inside the time it ran, its first one cut off", () => {
+    const { S, T } = live();
+    // A board item back at its implementation, as a retry would put it, with an implementer the pause stops at once.
+    const b = S.bundles[byBead(S, "kraft-91bc")];
+    b.item.current_node_id = "implementation";
+    const sid = T.createSession(b.item.id, "implementation", "implementation.main.implement").body.session_id;
+    T.sessionRunning(b.item.id, sid);
+    const s = b.sessions.find((x) => x.id === sid)!;
+    expect(subagentsOf(b, s).length).toBeGreaterThan(0);
+    expect(T.pause(b.item.id).status).toBe(200);
+    const wall = Date.parse(s.exited_at) - Date.parse(s.started_at);
+    expect(subagentsOf(b, s).map((a) => [a.status, a.duration_ms <= wall])).toEqual(subagentsOf(b, s).map((_, k) => [k ? "completed" : "cut_off", true]));
   });
 
   it("an escalation turn on another node counts its attempts from one there", () => {

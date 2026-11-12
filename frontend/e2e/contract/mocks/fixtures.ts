@@ -29,8 +29,8 @@ import type { EventType } from "../../../src/types/vocab.generated";
 import type { GateRound } from "../../../src/types";
 import { buildNgItem, NG_NOW, NG_SCENARIOS } from "./ngItems";
 import { ago, agoPy } from "./clock";
-import { isAgentSession, runOutput, scopeRunsOf, type Run } from "./taskKinds";
-import { changedFiles, contentDiff, docBody, gateTitle, isLate, itemDocs, mrOf, type Content } from "./ngContent";
+import { agentRun, isAgentSession, runningS, runOutput, scopeRunsOf, type Run } from "./taskKinds";
+import { changedFiles, contentDiff, docBody, gateTitle, isDocsPath, isLate, isTest, itemDocs, mrOf, statusOf, symbolOf, type Content } from "./ngContent";
 
 /* ── ids & time ──────────────────────────────────────────────────────────── */
 
@@ -192,7 +192,93 @@ export interface ItemBundle {
   content?: Content;
 }
 
-export function logLines(sessionId: string, n: number, long: boolean): any[] {
+/** The tasks whose agent hands work to sub-agents (Claude Code's Agent tool, `subagents.py`): the implementer, which the
+ *  plan skill says can hand a plan's tasks to sub-agents (`src/kraft/skills/plan/SKILL.md`), and, though no skill asks
+ *  them to, verification's repair and its code review, as an agent plausibly does. An author of a spec, plan, chain
+ *  revision, brief or summary, a gate's reviewer, the judge and an escalation turn read a document or two and work alone. */
+export const DELEGATES = new Set(["implementation.main.implement", "verification.fix_loop.main.repair", "verification.review.code_review"]);
+/** The tasks that change the item's files; every other agent only reads them (a code review changes nothing,
+ *  `src/kraft/skills/code-review/SKILL.md`). */
+const EDITS = new Set(["implementation.main.implement", "verification.fix_loop.main.repair"]);
+/** FNV-1a: a stable 32-bit number from a session id, which varies its log and sub-agents. */
+const fnv = (s: string) => [...s].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0, 0x811c9dc5);
+
+/** An agent session's log on an item with content (ngContent.ts): what `logLines` writes, about the item's own files,
+ *  and, for a task that delegates, sub-agents (one to three for the implementer, up to two for a repair or a review),
+ *  each about one of them. A sub-agent writes as Claude Code's do: a line of its own, a tool call, a `task_progress`
+ *  and, once done, a `task_notification` with its answer and usage, which `subagentList` reads as `subagents.Fold`
+ *  does. While its session runs, the first is still at work. They run inside the session's `wall_ms` (while it runs,
+ *  its task's usual one): together at most four fifths of it. */
+function contentLog(sid: string, hook: string, c: Content, status: string, wall_ms?: number): any[] {
+  const h = fnv(sid);
+  const edits = EDITS.has(hook);
+  const all = c.files.filter((f) => !isLate(f));
+  const stOf = new Map(all.map((f) => [f[0], statusOf(f)]));
+  // Before the implementer runs, a file it adds is not there to read.
+  const early = /^(spec|plan|chain_revision)/.test(hook) && all.some((f) => !statusOf(f));
+  const files = (early ? all.filter((f) => !statusOf(f)) : all).map(([p]) => p);
+  const at = (k: number) => files[(h + k) % files.length];
+  const test = files.find(isTest);
+  const lines: any[] = [];
+  const line = (src: string, text: string, more: Record<string, unknown> = {}) => lines.push({ n: lines.length + 1, t: t((lines.length + 1) / 10), src, text, ...more });
+  const subs = DELEGATES.has(hook) ? Math.min(files.length, (hook === "implementation.main.implement" ? 1 : 0) + (h % 3)) : 0;
+  const wall = wall_ms ?? agentRun(hook).wall_s * 1000;
+  const why = edits ? " before I change it" : "";
+  for (let i = 1; i <= 12; i++) {
+    const f = at(i);
+    const fn = symbolOf(f);
+    const src = (["sys", "stdout", "agent", "tool"] as const)[i % 4];
+    if (src === "sys") line(src, `[kraft] dispatch ${sid.slice(0, 8)} attempt 1 cwd=/Users/dev/.kraft/worktrees/${sid.slice(0, 12)}`);
+    else if (src === "stdout") line(src, test ? `${test}::${symbolOf(test)} PASSED [ ${String(i * 8).padStart(3)}%]` : `${f}: 0 problems`);
+    else if (src === "agent") line(src, isDocsPath(f) ? `Reading ${f} to see what the page says now${why}.` : `Reading ${f} to see what ${fn} does${why}.`);
+    else if (edits) line(src, JSON.stringify({ type: "tool_use", name: "Edit", input: { file_path: f, old_string: `${fn}(value`, new_string: `${fn}(value, limit` } }), { summary: `Edit ${f}` });
+    else line(src, JSON.stringify({ type: "tool_use", name: "Read", input: { file_path: f } }), { summary: `Read ${f}` });
+    const k = i / 4 - 1;
+    if (i % 4 !== 0 || k >= subs) continue;
+    // A sub-agent after each of the first `subs` edits: its own file (code, then pages, then tests, then the rest such as
+    // a manifest), and a question and answer that fit what the change does to that file.
+    const code = (p: string) => /\.(py|tsx?|js)$/.test(p) && !isTest(p);
+    const subjects = [...files.filter(code), ...files.filter(isDocsPath), ...files.filter(isTest), ...files.filter((p) => !code(p) && !isDocsPath(p) && !isTest(p))];
+    const f2 = subjects[(h + k) % subjects.length], fn2 = symbolOf(f2), docs = isDocsPath(f2), st = stOf.get(f2);
+    // Another of the change's files, there before it, of the same sort and as near as can be: what a sub-agent compares with.
+    const pool = files.filter((q) => q !== f2 && !stOf.get(q) && !isTest(q) && isDocsPath(q) === docs);
+    const sib = pool.find((q) => q.startsWith(f2.replace(/[^/]+$/, ""))) ?? pool[0];
+    // The code a test covers: the change's file its name names.
+    const tested = isTest(f2) ? files.find((q) => code(q) && f2.split("/").pop()!.replace(/^test_/, "").replace(/\.test(?=\.)/, "") === q.split("/").pop()) : undefined;
+    const n = 2 + ((h >>> k) % 3);
+    const link = docs ? "links to" : "imports";
+    const [label, answer] =
+      st === "new" ? (sib ? [`Check how ${sib} is ${docs ? "laid out" : "used"} before adding ${f2}`, `Found it in ${sib}: ${f2} can follow it; nothing ${link} ${f2} yet.`]
+        : [`Find where ${f2} would be ${docs ? "linked from" : "imported"}`, `Found it: nothing ${link} ${f2} yet; ${n} places will.`])
+      : st === "deleted" ? [`Find what still ${docs ? "links to" : "uses"} ${f2} before it goes`, `Found it: nothing outside this change still ${docs ? "links to" : "uses"} ${f2}.`]
+      : isTest(f2) ? [`Check what ${f2} needs to cover${tested ? ` in ${tested}` : ""}`, `Found it in ${f2}: it needs a case for each of the ${n} paths ${tested ? `${symbolOf(tested)} takes` : "this change adds"}.`]
+      : docs ? [`Find the pages that link to ${f2}`, `Found them: ${n} pages link to ${f2}, none by an anchor this change moves.`]
+      : !code(f2) ? (sib ? [`Check what in ${sib} reads ${f2}`, `Found it in ${sib}: it reads ${f2} in ${n} places, and none reads a line this change moves.`]
+        : [`Find what reads ${f2}`, `Found it: ${n} files read ${f2}, and none reads a line this change moves.`])
+      : [[`Find who calls ${fn2} in ${f2}`, `Found it in ${f2}: ${fn2} has ${n} callers, all inside this change.`], [`Check what ${f2} must keep`, `Found it in ${f2}: ${fn2} keeps its signature for its callers; only its body changes.`], [`Find the tests that cover ${f2}`, `Found it in ${test ?? f2}: it covers ${fn2} only on the happy path.`]][k];
+    const type = k === 1 ? "general-purpose" : "Explore";
+    const id = `a${((h ^ Math.imul(k + 1, 0x9e3779b1)) >>> 0).toString(16).padStart(8, "0")}`;
+    const tag = { agent: id, agent_label: label, agent_type: type };
+    const usage = { total_tokens: 9_000 + ((h >>> (k * 5)) % 37) * 1_100, tool_uses: 3 + ((h >>> (k * 3 + 1)) % 9), duration_ms: Math.round(wall * (0.8 / subs) * (0.75 + ((h >>> (k * 4 + 2)) % 5) * 0.05)) };
+    const tool = k === 1 ? "Read" : "Grep";
+    // A search looks for its subject elsewhere, in another of the item's files where it has one; a test's, for what the
+    // code it covers defines.
+    const where = tool === "Read" ? f2 : tested ?? sib ?? files.find((q) => q !== f2) ?? f2;
+    const pattern = docs ? f2.split("/").pop() : tested ? (tested.endsWith(".py") ? "^def " : "^export ") : fn2;
+    const look = `Looking for ${docs ? "links to it" : tested ? `what ${tested} defines` : fn2} in ${where}.`;
+    line("agent", look, { ...tag, summary: `↳ ${label}: ${look}` });
+    line("tool", JSON.stringify({ type: "tool_use", name: tool, input: tool === "Read" ? { file_path: f2 } : { pattern, path: where } }), { ...tag, summary: `↳ ${label}: ${tool} ${where}` });
+    line("sys", JSON.stringify({ type: "system", subtype: "task_progress", task_id: id, subagent_type: type, description: label, last_tool_name: tool, usage }), { ...tag, summary: `↳ ${label}: ${tool} · ${Math.round(usage.total_tokens / 1000)}k tokens · ${usage.tool_uses} tool uses` });
+    if (status === "running" && k === 0) continue;
+    line("sys", JSON.stringify({ type: "system", subtype: "task_notification", task_id: id, status: "completed", summary: answer, usage }), { ...tag, agent_status: "completed", summary: `↳ ${label}: completed: ${answer} · ${Math.round(usage.duration_ms / 1000)}s` });
+  }
+  return lines;
+}
+
+/** An agent session's log. `own`: the item's content and the session's task and status, for a log about the item's own
+ *  files (`contentLog`); with no content, the shared sample's. */
+export function logLines(sessionId: string, n: number, long: boolean, own?: { content?: Content; hook: string; status: string; wall_ms?: number }): any[] {
+  if (own?.content) return contentLog(sessionId, own.hook, own.content, own.status, own.wall_ms);
   const out: any[] = [];
   const srcs = ["sys", "stdout", "agent", "tool"] as const;
   for (let i = 1; i <= n; i++) {
@@ -230,14 +316,26 @@ export const sessionLog = (agent: boolean, run: Run | string | null, sid: string
 export function subagentList(lines: any[], status: string): any[] {
   const seen = new Map<string, any>();
   for (const l of lines) {
-    if (!l.agent || seen.has(l.agent)) continue;
-    const n = seen.size;
-    const running = status === "running" && n === 0;
-    seen.set(l.agent, {
-      id: l.agent, tool_use_id: `toolu_${l.agent}`, description: l.agent_label, type: l.agent_type ?? null, depth: 1, status: running ? "running" : "completed",
-      started_at: ago(71), ended_at: running ? null : ago(70.3), tokens: 31_000 + n * 7_000, tool_uses: 4 + n, duration_ms: 42_000,
-      last_tool: "Grep", summary: running ? null : "Found the grouping code in Changes.tsx.",
-    });
+    if (!l.agent) continue;
+    const running = status === "running" && (seen.size === 0 || seen.keys().next().value === l.agent);
+    if (!seen.has(l.agent)) {
+      const n = seen.size;
+      seen.set(l.agent, {
+        id: l.agent, tool_use_id: `toolu_${l.agent}`, description: l.agent_label, type: l.agent_type ?? null, depth: 1, status: running ? "running" : "completed",
+        started_at: ago(71), ended_at: running ? null : ago(70.3), tokens: 31_000 + n * 7_000, tool_uses: 4 + n, duration_ms: 42_000,
+        last_tool: "Grep", summary: running ? null : "Found the grouping code in Changes.tsx.",
+      });
+    }
+    // A sub-agent's `task_progress` or `task_notification` line (`contentLog`'s; the sample's have none): its last tool,
+    // its usage and, once it has finished, its answer.
+    if (l.src !== "sys") continue;
+    const e = seen.get(l.agent);
+    const o = JSON.parse(l.text);
+    Object.assign(e, { tokens: o.usage.total_tokens, tool_uses: o.usage.tool_uses, duration_ms: o.usage.duration_ms, last_tool: o.last_tool_name ?? e.last_tool });
+    // One with no notification in an ended session's log was cut off (`Fold.entries`): a pause stopped it.
+    if (!running) Object.assign(e, o.subtype === "task_notification"
+      ? { status: "completed", summary: o.summary, ended_at: new Date(Date.parse(e.started_at) + e.duration_ms).toISOString() }
+      : { status: "cut_off", summary: null, ended_at: null });
   }
   return [...seen.values()];
 }
@@ -816,13 +914,12 @@ export function gateRoundsOf(events: Ev[], threads: any[] = [], reviews: any[] =
 export function serverKeys(b: ItemBundle): ItemBundle {
   const it = b.item;
   const fill = (o: any, d: Record<string, unknown>) => { for (const [k, v] of Object.entries(d)) if (!(k in o)) o[k] = v; };
-  const ran = b.sessions.reduce((n, s) => n + (s.wall_ms ?? 0), 0);
   fill(it, {
     archived_at: null, archived_by: null, fallback: null, base_ref: null, bead_cwd: null, branch: `kraft/${it.id}`, budget_set: 0, budget_usd: null,
     ci_pipeline_ref: null, current_step: 0, dependencies: [], depends_on: null, ended_at: null, ended_reason: null, escalation_session_id: null, implements_beads: null,
     judge_stop_note: [], needs_context_question: null, node_passes: {}, pending_rewind: null, pending_steer_context: null, policy_override: null,
     queued: null, queued_request: null, reject_default: null, retry_at: null, root_merge_policy: null, run_chain: null,
-    running_time: { running_s: Math.round(ran / 1000), cap_minutes: null }, scope_runs: scopeRunsOf(it.materialized_chain, b.sessions), skipped_paths: [], started_at: b.sessions.map((s) => s.started_at).filter(Boolean).sort()[0] ?? null, step: null, stop_kind: null, stop_reason: null,
+    running_time: { running_s: runningS(it.materialized_chain, b.sessions), cap_minutes: null }, scope_runs: scopeRunsOf(it.materialized_chain, b.sessions), skipped_paths: [], started_at: b.sessions.map((s) => s.started_at).filter(Boolean).sort()[0] ?? null, step: null, stop_kind: null, stop_reason: null,
     submodules: null, suggested_action: null, test_result: null, worktree_exists: true, in_place: false,
     children: null, slices: null, parent_id: null, slice_key: null, slice_generation: null, docs_commit: null, pinned_head: null,
     group: null, group_state: null, paused_by_parent: 0,
@@ -1122,7 +1219,7 @@ export const withFailedTests = (n: number, red: number) => (S: Scenario) => { wi
  *  raises, so its stop names that `limit` (`caps.item_limit`); a task's cap, the sample's, names none. */
 export const withCapLimit = (S: Scenario) => {
   const b = ngBundle("capped", S);
-  const running_s = Math.round(b.sessions.reduce((a, s) => a + (s.wall_ms ?? 0), 0) / 1000);
+  const running_s = runningS(b.item.materialized_chain, b.sessions);
   const minutes = Math.round(running_s / 60);
   const reason = `the work item hit its time cap of ${minutes} minutes`;
   const limit = { path: "", key: "time_cap_minutes", value: minutes };

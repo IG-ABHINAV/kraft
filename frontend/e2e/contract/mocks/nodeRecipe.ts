@@ -1,5 +1,5 @@
 import type { EventType } from "../../../src/types/vocab.generated";
-import { agentRun, DOCS_SCOPE, MODEL, PRICE, RUNS, taskRun, type Run } from "./taskKinds";
+import { agentRun, DOCS_SCOPE, MODEL, PRICE, RUNS, taskRun, WAITS, type Run } from "./taskKinds";
 import type { DefNode } from "./ngChain";
 
 /**
@@ -39,6 +39,8 @@ export interface Writer {
   readonly events: any[];
   /** How many polls an external wait takes, where the recipe does not say. */
   readonly polls?: number;
+  /** How big the item's change is (ngContent.ts `sizeOf`): what its agents' tokens and time follow (`agentUsage`, `agentWall`). */
+  readonly size: number;
   ev(type: EventType, payload?: Record<string, unknown>, dm?: number): void;
   /** `node_started`. */
   enter(node: string, dm: number): void;
@@ -82,13 +84,19 @@ export const cacheRead = (u: { cost_usd: number; tokens_in: number; tokens_cache
  *  sessions, which jitters it a little so no two read the same. Every kind of token, as an exit reports them
  *  (`usage.KINDS`): a little fresh input, a cache write as it first reads the repo, and the cache reads its cost
  *  leaves room for, most of an agent's prompt. */
-export function agentUsage(hookPoint: string, n: number) {
+export function agentUsage(hookPoint: string, n: number, size = 1) {
   const r = agentRun(hookPoint);
-  const u = { model: MODEL, tokens_in: 40 + ((n * 37) % 300), tokens_cache_write: 18_000 + ((n * 211) % 9_000), tokens_cache_read: 0, tokens_out: Math.round(r.tokens_out * (1 + (n % 4) * 0.05)), cost_usd: Math.round(r.cost_usd * (1 + (n % 4) * 0.05) * 10_000) / 10_000 };
+  const k = sized(hookPoint, size);
+  const u = { model: MODEL, tokens_in: 40 + ((n * 37) % 300), tokens_cache_write: 18_000 + ((n * 211) % 9_000), tokens_cache_read: 0, tokens_out: Math.round(r.tokens_out * (1 + (n % 4) * 0.05) * k), cost_usd: Math.round(r.cost_usd * (1 + (n % 4) * 0.05) * k * 10_000) / 10_000 };
   return { ...u, tokens_cache_read: cacheRead(u) };
 }
-/** An agent's wall time by its recipe, jittered as `agentUsage` is. */
-export const agentWall = (hookPoint: string, n: number) => Math.round(agentRun(hookPoint).wall_s * 1000 * (1 + (n % 3) * 0.07));
+/** An agent's wall time by its recipe, jittered as `agentUsage` is, and sized as it is. */
+export const agentWall = (hookPoint: string, n: number, size = 1) => Math.round(agentRun(hookPoint).wall_s * 1000 * (1 + (n % 3) * 0.07) * sized(hookPoint, size));
+/** How much of an item's size (`Writer.size`, ngContent.ts `sizeOf`) a task's tokens and time follow: the implementer's
+ *  all of it, a code review and the documents written about the change a little, the rest none (a spec or a plan is
+ *  written from the brief). At size 1, an item with no content of its own, every task runs as its recipe says. */
+const SIZED: Record<string, number> = { "implementation.main.implement": 1, [REVIEW]: 0.3, "work_brief.main.author": 0.15, "describe_merge_request.main.author": 0.15, "work_item_summary.main.author": 0.15 };
+const sized = (hookPoint: string, size: number) => 1 + (SIZED[hookPoint] ?? 0) * (size - 1);
 
 /** A finding as `findings_measured` lists it, and its fingerprint (`findings.Finding.fingerprint`, 16 hex). A failed scope runs as a plain
  *  subprocess and writes no findings file, so what reaches the round is a blind failure (`findings.from_blind_failure`): the hook, each
@@ -102,11 +110,14 @@ export function failedTest(late?: string | null): string {
   const base = late.split("/").pop()!.replace(/\.[^.]+$/, "").replace(/\.test$/, "");
   return /\.(md|rst|txt)$/.test(late) ? `FAILED ${late}::${late.split("/").pop()}` : `FAILED ${late}::${base} - AssertionError`;
 }
-/** A red test run's log with the item's own failing test in the sample's place (`failedTest`). */
-export const ownFailure = (log: any[], late?: string | null) => (late ? log.map((l) => (l.text === failedTest() ? { ...l, text: failedTest(late) } : l)) : log);
+/** The docs check's complaint about `page` (the sample's, `DOCS_SCOPE`'s, without one). */
+const docsLine = (page = "docs/search.md") => `${page}:12 MD040/fenced-code-language Fenced code blocks should have a language specified`;
+/** A failed scope's log as an item's own: its late file's red test, and its own page's docs complaint. */
+export const ownFailure = (log: any[], late?: string | null, page?: string | null) =>
+  log.map((l) => (late && l.text === failedTest() ? { ...l, text: failedTest(late) } : page && l.text === docsLine() ? { ...l, text: docsLine(page) } : l));
 /** Round 0's red test, then round 1's red docs check: two defects, so two fingerprints, and the stuck detector does not fire. */
 export const redOf = (late?: string | null): Found => ({ finding: blindFinding(TESTS, RUNS["kraft.verify_changed_test_scopes"].command!, failedTest(late)), print: "5be0c1d7a93e4f20", cmd: RUNS["kraft.verify_changed_test_scopes"].command });
-export const DOCS_RED: Found = { finding: blindFinding(TESTS, DOCS_SCOPE.command!, "docs/search.md:12 MD040/fenced-code-language Fenced code blocks should have a language specified"), print: "c41f0e9b2d7a6853", cmd: DOCS_SCOPE.command };
+export const docsRedOf = (page?: string | null): Found => ({ finding: blindFinding(TESTS, DOCS_SCOPE.command!, docsLine(page ?? undefined)), print: "c41f0e9b2d7a6853", cmd: DOCS_SCOPE.command });
 
 /** A session that ran to `status`: made (and launched), a beat, then ended. */
 export function* ran(w: Writer, path: string, node: string, status = "done", o: Open = {}): Beats<any> {
@@ -147,9 +158,6 @@ export function* judge(w: Writer, round: number, found: Found[], reasoning: stri
   yield* ran(w, JUDGE, "verification", "done", { round });
   w.ev("judge_verdict", { node_id: "verification", cycle: round, verdict: "continue", reasoning, findings: found.map((f) => asFinding(w, f)) }, 0.02);
 }
-/** The forge waits (`forge.run._WAITS`, by target): every dispatch of one is an observation (`waits.observe`), a first
- *  look that settles at once included. */
-const WAITS = new Set(["mr.ci", "mr.automated_review", "mr.external_approval", "mr.merge", "mr.post_merge_ci"]);
 /** A forge wait's bounds in seconds, as `ForgeTask.wait_bounds` reads them (a task's `total_time_cap_minutes` and `wait.polling`,
  *  `DEFAULT_WAIT` for what it leaves out; `config/library.yaml`): its timeout, its first interval and its longest. */
 const BOUNDS: Record<string, { timeout: number; initial: number; max: number }> = {
@@ -252,14 +260,16 @@ export function* nodeBeats(w: Writer, n: DefNode, o: { red?: boolean } = {}): Be
       if (!go("implementation.main.implement")) break;
       const s = w.open("implementation.main.implement", n.id);
       // Its plan's tasks as it reports them, half of them a beat; with no plan it reports none, and works two beats all the same.
+      // A minute and a half apart, closer in a run too short for that: every report falls inside it.
       const half = Math.ceil(w.plan.length / 2);
+      const gap = Math.min(1.5, agentWall(s.hook_point, w.sessions.indexOf(s), w.size) / 60_000 / (w.plan.length + 1));
       yield;
       for (let k = 0; k < w.plan.length; k++) {
         if (k === half) yield;
-        w.ev("plan_progress", { node_id: n.id, task: k + 1, total: w.plan.length, title: w.plan[k] }, 1.5);
+        w.ev("plan_progress", { node_id: n.id, task: k + 1, total: w.plan.length, title: w.plan[k] }, gap);
       }
       if (!w.plan.length) yield;
-      w.clock(-1.5 * w.plan.length);
+      w.clock(-gap * w.plan.length);
       w.close(s);
       break;
     }
