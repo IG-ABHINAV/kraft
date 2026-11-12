@@ -1,6 +1,6 @@
 import { LIVE_SESSION_STATUSES } from "../../../src/types/vocab.generated";
 import type { ItemBundle, Scenario } from "./fixtures";
-import { isAgentSession, MODEL, nodeTasks } from "./taskKinds";
+import { isAgentSession, MODEL, nodeTasks, taskRun } from "./taskKinds";
 import { pendingRewind, sinceFork, threadSummary, type Transitions } from "./transitions";
 
 /**
@@ -58,7 +58,7 @@ const TURN_TICKS = 2;
 
 /** What the escalation agent found, by the kind of stop it was asked about; `task` is the stopped task's name. */
 const FOUND: Record<string, (node: string, task: string) => string> = {
-  stuck: (_, task) => `The repair rounds keep fixing what ${task} reports, not why it reports it, so the same finding comes back each round. A steer that names the cause should get it through.`,
+  stuck: (node) => `The repair rounds in ${node} keep fixing what its last measurement reported, not why it reports it, so each round finds something new to fix. A steer that names the cause should get it through.`,
   failed: (_, task) => `${task} fails the same way on every attempt, for a reason outside the code, so retrying it alone will not change the answer. Fix what its log names first.`,
   cap: (node) => `${node} was still making progress when it reached its cap. A higher cap, or a retry with a narrower steer, should let it finish.`,
   conflict: () => "Both sides changed the conflicting files for different reasons, so neither can simply win: keep main's version and redo this item's change on top of it.",
@@ -218,7 +218,7 @@ export function motion(S: Scenario, T: Transitions, o: MotionOptions = {}): Moti
     if (live.length) {
       for (const s of live) {
         // The forge's draft task opens the merge request (`forge.run`), recorded as it ends.
-        if (String(s.hook_point).split(".")[2] === "open_draft") T.mrOpened(id, node);
+        if (taskRun(b.item.materialized_chain, s.hook_point) === "mr.open_draft") T.mrOpened(id, node);
         T.sessionExited(id, s.id, isAgent(b, s) ? usage() : null);
       }
       T.completeNode(id, node);

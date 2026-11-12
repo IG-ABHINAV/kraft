@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { buildScenario, withReviewer, withScopes, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
-import { isAgentSession, MODEL, nodeTasks, RUNS, runOutput, taskKind } from "../e2e/contract/mocks/taskKinds";
+import { buildScenario, withScopes, type ItemBundle, type Scenario } from "../e2e/contract/mocks/fixtures";
+import { frozenOf } from "../e2e/contract/mocks/ngChain";
+import { AUTO_ESCALATE_MESSAGE, MR_CLOSED_REASON } from "../e2e/contract/mocks/ngItems";
+import { isAgentSession, MODEL, nodeTasks, RUNS, runOutput, taskKind, taskRun } from "../e2e/contract/mocks/taskKinds";
 import { transitions } from "../e2e/contract/mocks/transitions";
 
 /**
@@ -14,14 +16,26 @@ import { transitions } from "../e2e/contract/mocks/transitions";
 const kindsOf = (b: ItemBundle) => {
   const out = new Map<string, string>();
   const chain = b.item.materialized_chain ? JSON.parse(b.item.materialized_chain).chain : { nodes: [] };
+  /** A home of tasks: its steps' (`<prefix>.<step>.<task>`) and those it lists directly (step `main`). */
+  const home = (prefix: string, h: any) => {
+    for (const st of h?.steps ?? []) for (const t of st.tasks ?? []) out.set(`${prefix}.${st.id}.${t.id}`, t.kind ?? "agent");
+    for (const t of h?.tasks ?? []) out.set(`${prefix}.main.${t.id}`, t.kind ?? "agent");
+  };
   for (const n of chain.nodes) {
-    for (const st of n.steps ?? []) for (const t of st.tasks) out.set(`${n.id}.${st.id}.${t.id}`, t.kind);
+    home(n.id, n);
+    if (n.fix_loop) home(`${n.id}.fix_loop`, n.fix_loop);
+    if (n.fix_loop?.judge) out.set(`${n.id}.fix_loop.judge`, n.fix_loop.judge.kind ?? "agent");
+    if (n.on_failure) home(`${n.id}.on_failure`, n.on_failure);
     if (n.auto_review) out.set(`${n.id}.auto_review`, n.auto_review.kind);
   }
   return out;
 };
 /** An escalation turn is an agent's, and so is a task the chain names as one; the older samples carry no chain, and say by their model. */
 const agentic = (b: ItemBundle, s: any) => s.hook_point === "escalation" || (kindsOf(b).get(s.hook_point) ?? (s.model ? "agent" : "")) === "agent";
+/** The one agent's task that can finish with no agent: review feedback's triage with no bot feedback to read (`dispatch`). */
+const TRIAGE = "merge_request_feedback.review_feedback.triage";
+const noAgentTriage = (b: ItemBundle, s: any) =>
+  s.hook_point === TRIAGE && s.status === "done" && s.model == null && s.cost_usd == null && logOf(b, s).map((l) => l.text).join("\n") === "no bot feedback collected; no agent started";
 const logOf = (b: ItemBundle, s: any): any[] => b.logs[s.id] ?? [];
 const lastSegment = (hook: string) => hook.split(".").at(-1)!;
 /** `rule` is a way a session can be wrong; the bundles' offenders, readably, so a failure names the item and task. */
@@ -32,7 +46,7 @@ const seeded = (seed: (S: Scenario) => void) => { const S = buildScenario("defau
 const SCENARIOS: [string, () => Scenario][] = [
   ["the default sample", () => buildScenario("default")],
   ["the long variant", () => buildScenario("long")],
-  ["a gate's reviewer", () => seeded(withReviewer)],
+  ["the many variant", () => buildScenario("many")],
   ["test scopes", () => seeded(withScopes)],
 ];
 
@@ -44,15 +58,122 @@ describe.each(SCENARIOS)("sessions in %s", (_scenario, build) => {
     ["a command's session reports no harness", (b, s) => !agentic(b, s) && s.harness != null],
     ["a command's session reports no usage", (b, s) => !agentic(b, s) && (s.tokens_in != null || s.tokens_out != null || s.cost_usd != null)],
     ["a command's session wrote no summary", (b, s) => !agentic(b, s) && s.session_summary_ref != null],
+    // `item_paths`: a session's summary is in its item's folder, `items/<id>/sessions/<folder>/out/summary.md`.
+    ["a session's summary is in its item's folder", (b, s) => s.session_summary_ref != null && !new RegExp(`^items/${b.item.id}/sessions/[^/]+/out/summary\\.md$`).test(s.session_summary_ref)],
     ["a command's log holds its output only: no tool call, no agent line", (b, s) => !agentic(b, s) && logOf(b, s).some((l) => l.src !== "stdout" || l.agent)],
     ["a command's finished session reports how long it took", (b, s) => !agentic(b, s) && ["done", "failed"].includes(s.status) && !(s.wall_ms > 0)],
     ["a test or lint run has the command it ran", (_b, s) => ["unit_tests", "lint", "typecheck"].includes(lastSegment(s.hook_point)) && !s.command],
     ["an agent's session reports the claude harness", (b, s) => agentic(b, s) && s.harness !== "claude"],
-    ["an agent's finished session reports its model and usage", (b, s) => agentic(b, s) && ["done", "done_with_concerns"].includes(s.status) && (s.model == null || s.tokens_in == null || s.cost_usd == null)],
-    ["an agent's log has its own lines", (b, s) => agentic(b, s) && !logOf(b, s).some((l) => l.src === "agent")],
+    ["an agent's finished session reports its model and usage", (b, s) => agentic(b, s) && !noAgentTriage(b, s) && ["done", "done_with_concerns"].includes(s.status) && (s.model == null || s.tokens_in == null || s.cost_usd == null)],
+    ["an agent's log has its own lines", (b, s) => agentic(b, s) && !noAgentTriage(b, s) && !logOf(b, s).some((l) => l.src === "agent")],
     ["a board item's agents run the mock's model", (b, s) => onTheBoard.has(b.item.id) && agentic(b, s) && s.model != null && s.model !== MODEL],
   ])("%s", (_rule, rule) => {
     expect(offenders(S, rule)).toEqual([]);
+  });
+});
+
+/** The nodes each template's chain has: what a real server freezes for `default` and `quick-task`, and the board's own `docs_only`. */
+const CHAIN_NODES: Record<string, string[]> = {
+  default: ["spec", "spec_approval", "plan", "plan_approval", "chain_revision", "chain_revision_approval", "implementation", "verification", "work_brief", "local_review",
+    "describe_merge_request", "draft_merge_request", "merge_request_feedback", "work_item_summary", "final_review", "mark_ready", "external_approval", "merge", "post_merge_ci"],
+  "quick-task": ["implementation", "verify"],
+  docs_only: ["spec", "spec_approval", "implementation", "work_brief", "draft_merge_request"],
+};
+/** The items that run a frozen chain (the older samples carry none). */
+const chained = (S: Scenario) => Object.values(S.bundles).filter((b) => b.item.materialized_chain);
+const defIds = (b: ItemBundle): string[] => (b.item.chain_definition?.nodes ?? []).map((n: any) => n.id);
+const frozenIds = (b: ItemBundle): string[] => JSON.parse(b.item.materialized_chain).chain.nodes.map((n: any) => n.id);
+/** Whether a scope command passed, as its session's status says: null while it has not finished. */
+const passedBy = (status: string) => (status === "done" || status === "done_with_concerns" ? true : status === "failed" ? false : null);
+/** `store.create_session` counts a node's attempts at a hook point, an escalation turn's included: the sessions whose attempt is not that count. */
+const escalationMiscounts = (b: ItemBundle) => b.sessions.filter((s) => s.hook_point === "escalation").filter((s, k, all) => s.attempt !== all.slice(0, k).filter((x) => x.node_id === s.node_id).length + 1).map((s) => `${s.node_id} attempt ${s.attempt}`);
+const cost = (b: ItemBundle) => b.sessions.reduce((a, s) => a + (s.cost_usd ?? 0), 0);
+/** How a stop's reason starts, by its kind, where the server words it (`walk`, `mr_poller`, `caps`), and the stops that
+ *  have none (`board._stop_payload`: a rate limit, an external wait). A kind not listed is not checked. */
+const REASONS: Record<string, (reason: string | null, b: ItemBundle) => boolean> = {
+  stuck: (r) => /^(stuck|judge): /.test(r ?? ""),
+  question: (r) => /^needs_context: /.test(r ?? ""),
+  failed: (r) => /^task failed in node \S+: /.test(r ?? ""),
+  conflict: (r) => /^git rebase failed for |hit a rebase conflict in node /.test(r ?? ""),
+  cap: (r, b) => r === b.events.filter((e) => e.type === "time_cap_reached").at(-1)?.payload.reason,
+  budget: (r) => /^(budget cap reached|budget_usd reached|token budget reached): /.test(r ?? ""),
+  mr_closed: (r) => r === MR_CLOSED_REASON,
+  rate_limit: (r) => r === null,
+  wait: (r) => r === null,
+};
+const reasonFits = (b: ItemBundle) => (REASONS[b.item.stop.kind] ?? (() => true))(b.item.stop.reason, b);
+/** The kinds a stop in the stuck set can have (`walk._Stuck`): a failed task, a spent fix loop, a loop that cannot get on,
+ *  a rebase conflict in a fix loop. */
+const STUCK_SET = ["stuck", "failed", "cap", "conflict"];
+
+describe.each(SCENARIOS)("items in %s", (_scenario, build) => {
+  const S = build();
+  it.each<[string, (b: ItemBundle) => unknown]>([
+    // Each rule answers what is wrong with the item, or nothing.
+    ["every session's hook point is a task of the item's frozen chain, or an escalation turn",
+      (b) => b.sessions.filter((s) => s.hook_point !== "escalation" && !kindsOf(b).has(s.hook_point)).map((s) => s.hook_point)],
+    ["every session's node is a node of the item's chain", (b) => b.sessions.filter((s) => !defIds(b).includes(s.node_id)).map((s) => s.node_id)],
+    ["its chain is its template's, in its definition and its frozen chain",
+      (b) => [defIds(b), frozenIds(b)].some((ids) => JSON.stringify(ids) !== JSON.stringify(CHAIN_NODES[b.item.chain_template])) && `template ${b.item.chain_template}`],
+    ["the node it stands on is in its chain", (b) => b.item.current_node_id != null && !defIds(b).includes(b.item.current_node_id) && `stands on ${b.item.current_node_id}`],
+    ["its summary counts its chain's nodes", (b) => b.item.summary.nodes_total !== defIds(b).length && `counts ${b.item.summary.nodes_total}`],
+    // To the cent the UI shows: a tweak that scales costs rounds each one.
+    ["what it spent is what its sessions cost", (b) => Math.abs(b.item.budget_cap.spent_usd - cost(b)) >= 0.005 && [b.item.budget_cap.spent_usd, cost(b)]],
+    ["a completed item stands on its last node", (b) => b.item.status === "completed" && b.item.current_node_id !== defIds(b).at(-1) && `stands on ${b.item.current_node_id}`],
+    ["its events never go back in time", (b) => b.events.some((e, k) => k > 0 && Date.parse(e.created_at) < Date.parse(b.events[k - 1].created_at)) && "out of order"],
+    ["every command a changed-test-scope task ran is in `scope_runs`, with how it went",
+      (b) => b.sessions.filter((s) => s.command && taskRun(b.item.materialized_chain, s.hook_point) === "kraft.verify_changed_test_scopes")
+        .filter((s) => { const r = (b.item.scope_runs ?? []).find((x: any) => x.session_id === s.id); return !r || r.command !== s.command || r.hook_point !== s.hook_point || r.passed !== passedBy(s.status); })
+        .map((s) => s.hook_point)],
+    ["every session was created by an event", (b) => b.sessions.filter((s) => !b.events.some((e) => e.type === "worker_session_created" && e.payload.session_id === s.id)).map((s) => s.hook_point)],
+    // `walk`: the judge is due only once a repair has run, and judges a measurement before the next cycle starts.
+    ["a fix loop's judge reads a measurement after a repair, before the next cycle, and names the findings that measurement held",
+      (b) => b.events.flatMap((e, k) => {
+        if (e.type !== "judge_verdict") return [];
+        const before = b.events.slice(0, k);
+        const repaired = before.some((x) => x.type === "fix_cycle_finished" && Number(x.payload.cycle) <= Number(e.payload.cycle));
+        const next = before.some((x) => x.type === "fix_cycle_started" && Number(x.payload.cycle) > Number(e.payload.cycle));
+        const read = before.filter((x) => x.type === "findings_measured" && Number(x.payload.cycle) === Number(e.payload.cycle)).at(-1);
+        return repaired && !next && read && JSON.stringify(e.payload.findings) === JSON.stringify(read.payload.findings) ? [] : [`judge at cycle ${e.payload.cycle}`];
+      })],
+    // A task that fails without writing a findings file reaches the round as one finding (`findings.from_blind_failure`): its hook, no file or line, and the log of each job.
+    ["a finding a failed task left is a blind failure: its hook, critical, no file or line, and a job to read",
+      (b) => b.events.filter((e) => e.type === "findings_measured").flatMap((e) => (e.payload.findings as any[])
+        .filter((f) => !kindsOf(b).has(f.source_plugin) || f.severity !== "critical" || f.file !== null || f.line !== null || !String(f.message).startsWith(`${f.source_plugin} failed\n- `)
+          || !("same_as" in f) || !(f.jobs ?? []).length || ((f.jobs as any[]).some((j) => j.label !== f.source_plugin) && !String(f.message).includes("\n\nConfirm the fix with: ")))
+        .map((f) => f.source_plugin))],
+    ["a finished fix cycle names the head it left", (b) => b.events.filter((e) => e.type === "fix_cycle_finished" && !e.payload.head_sha).map((e) => `cycle ${e.payload.cycle}`)],
+    ["its stop's reason is one the walk writes for that kind", (b) => b.item.stop && !reasonFits(b) && `${b.item.stop.kind}: ${b.item.stop.reason}`],
+    // `gates.auto_escalate_stuck` answers only a stop in the stuck set, and always with the same message.
+    ["an automatic escalation turn answers a stuck stop, in Kraft's words",
+      (b) => b.events.flatMap((e, k) => {
+        if (e.type !== "escalation_message" || !e.payload.auto) return [];
+        const stop = b.events.slice(0, k).filter((x) => x.type === "work_item_needs_human").at(-1);
+        return stop?.payload.stuck === true && e.payload.message === AUTO_ESCALATE_MESSAGE ? [] : [`turn ${e.payload.turn}`];
+      })],
+    ["only a stop in the stuck set is marked stuck", (b) => b.events.filter((e) => e.type === "work_item_needs_human" && e.payload.stuck && !STUCK_SET.includes(String(e.payload.kind))).map((e) => e.payload.kind)],
+    // `walk` raises `StopKind.CAP` for a task's time cap (not stuck) and for a spent fix loop (`_Stuck`); the cap it writes after `time_cap_reached` is the first.
+    ["a stop that follows a time cap is not marked stuck", (b) => b.events.filter((e, k) => e.type === "work_item_needs_human" && e.payload.stuck && b.events.slice(0, k).some((x) => x.type === "time_cap_reached")).map((e) => e.payload.kind)],
+    ["the stop an item shows is the one its last needs-human event wrote", (b) => {
+      // A pending gate, a rate limit and an external wait are stops the server reads off other events (`board._stop_payload`).
+      if (!b.item.stop || b.item.status !== "needs_human" || ["gate", "rate_limit", "wait"].includes(b.item.stop.kind)) return false;
+      const e = b.events.filter((x) => x.type === "work_item_needs_human").at(-1);
+      return (!e || e.payload.kind !== b.item.stop.kind || (e.payload.reason ?? null) !== (b.item.stop.reason ?? null)) && `${b.item.stop.kind}: ${b.item.stop.reason}`;
+    }],
+    // `store.create_session` counts a node's attempts at a hook point, an escalation turn's included.
+    ["an escalation session's attempt counts the escalation sessions before it on its node", escalationMiscounts],
+    ["a stop's task is never an escalation turn", (b) => b.item.stop?.task === "escalation" && "escalation"],
+    // Only Kraft's own cancel writes `mr_closed`; the poller that sees a merge request closed writes a stop.
+    ["no merge request is closed but by Kraft's cancel", (b) => b.events.filter((e) => e.type === "mr_closed" && e.payload.by !== "cancel").map((e) => e.payload.by)],
+    ["it spent no more than its cap, unless that cap stopped it", (b) => b.item.budget_cap.spent_usd > b.item.budget_cap.cap_usd && b.item.stop?.kind !== "budget" && b.item.budget_cap.spent_usd],
+  ])("%s", (_rule, wrong) => {
+    const found = chained(S).map((b) => [b.item.title, wrong(b)] as const).filter(([, w]) => (Array.isArray(w) ? w.length > 0 : !!w));
+    expect(found).toEqual([]);
+  });
+
+  it("no two board items share a title", () => {
+    const titles = [...S.ngBoard, ...S.ngArchived].map((id) => S.bundles[id].item.title);
+    expect(titles.filter((x, k) => titles.indexOf(x) !== k)).toEqual([]);
   });
 });
 
@@ -68,34 +189,64 @@ const pausedWithout = (S: Scenario, drop: string[]) => {
   b.sessions = b.sessions.filter((s) => !drop.includes(lastSegment(s.hook_point)));
   return b;
 };
-/** What the sample's own session at `hook` says, to hold a door's session to: the task's command and the output it ends with. */
-const sampleAt = (b: ItemBundle, hook: string, not: string) => b.sessions.find((s) => s.hook_point === hook && s.id !== not)!;
+/** What the sample's own session at `hook` says, to hold a door's session to: the task's command and the output it ends with,
+ *  from a finished run of the first command it ran there (a changed-test-scope task runs one session per scope command). */
+const sampleAt = (b: ItemBundle, hook: string, not: string) => {
+  const first = b.sessions.find((s) => s.hook_point === hook && s.id !== not)!;
+  return b.sessions.find((s) => s.hook_point === hook && s.id !== not && s.status === "done" && s.command === first.command)!;
+};
 
 describe("sessions the doors make", () => {
   it("a command's task gets a command's session: its command, no usage, and its output grown to all of it", () => {
     const { S, T } = live();
     const id = S.ng.running;
     const b = S.bundles[id];
-    const hook = "verification.test.unit_tests";
+    const hook = "verification.tests.test_changed_scopes";
     const sid = T.createSession(id, "verification", hook).body.session_id;
     const s = () => b.sessions.find((x) => x.id === sid)!;
     const sample = sampleAt(b, hook, sid);
     expect(s()).toMatchObject({ status: "pending", model: null, harness: null, command: sample.command });
     expect(sample.command).toBeTruthy();
+    // A changed-test-scope command is listed in the item's scope runs, unfinished, and its outcome follows its session's.
+    const scoped = () => b.item.scope_runs.find((r: any) => r.session_id === sid);
+    expect(scoped()).toMatchObject({ hook_point: hook, command: sample.command, passed: null });
     // While it runs it has printed less than when it is done.
     const partial = logOf(b, s()).length;
     T.sessionExited(id, sid, null);
     expect(s()).toMatchObject({ status: "done", model: null, harness: null, tokens_in: null });
+    expect(scoped()).toMatchObject({ passed: true, exit_code: 0 });
     expect(logOf(b, s()).every((l) => l.src === "stdout")).toBe(true);
     expect(logOf(b, s()).map((l) => l.text)).toEqual(logOf(b, sample).map((l) => l.text));
     expect(logOf(b, s()).length).toBeGreaterThan(partial);
+  });
+
+  it("escalation turns the door starts count their attempts on their node, after the sample's own", () => {
+    const { S, T } = live();
+    const b = S.bundles[S.ng.failed];
+    const had = b.sessions.filter((s) => s.hook_point === "escalation").length;
+    expect(T.escalate(b.item.id, "look").status).toBe(200);
+    T.stopEscalation(b.item.id);
+    expect(T.escalate(b.item.id, "again").status).toBe(200);
+    expect(b.sessions.filter((s) => s.hook_point === "escalation")).toHaveLength(had + 2);
+    expect(escalationMiscounts(b)).toEqual([]);
+  });
+
+  it("an escalation turn on another node counts its attempts from one there", () => {
+    const { S, T } = live();
+    const b = S.bundles[S.ng.failed];
+    expect(T.escalate(b.item.id, "look").status).toBe(200);
+    T.stopEscalation(b.item.id);
+    b.item.current_node_id = "work_item_summary";
+    expect(T.escalate(b.item.id, "and here").status).toBe(200);
+    expect(b.sessions.at(-1)).toMatchObject({ hook_point: "escalation", node_id: "work_item_summary", attempt: 1 });
+    expect(escalationMiscounts(b)).toEqual([]);
   });
 
   it("an agent's task gets the claude harness and a log of its own lines, and its model once it reports usage", () => {
     const { S, T } = live();
     const id = S.ng.running;
     const b = S.bundles[id];
-    const sid = T.createSession(id, "work_brief", "work_brief.write.work_brief").body.session_id;
+    const sid = T.createSession(id, "work_brief", "work_brief.main.author").body.session_id;
     const s = () => b.sessions.find((x) => x.id === sid)!;
     expect(s()).toMatchObject({ harness: "claude", model: null, tokens_in: null, cost_usd: null });
     expect(logOf(b, s()).some((l) => l.src === "agent")).toBe(true);
@@ -105,8 +256,8 @@ describe("sessions the doors make", () => {
   });
 
   it.each<[string, (S: Scenario) => ItemBundle]>([
-    ["a forge call", (S) => S.bundles[S.ng.failed]],
-    ["a test command, which has a command line", (S) => pausedWithout(S, ["lint", "typecheck", "security_scan", "code_review"])],
+    ["a forge call", (S) => S.bundles[S.ng.conflict]],
+    ["a test command, which has a command line", (S) => pausedWithout(S, ["code_review"])],
   ])("an escalation turn is an agent's, though the last session was %s", (_name, pick) => {
     const { S, T } = live();
     const b = pick(S);
@@ -121,7 +272,7 @@ describe("sessions the doors make", () => {
 
   it.each<[string, (S: Scenario) => ItemBundle, "agent" | "command"]>([
     ["an agent's task", (S) => S.bundles[S.ng.paused], "agent"],
-    ["a test command's task", (S) => pausedWithout(S, ["code_review", "typecheck", "security_scan"]), "command"],
+    ["a test command's task", (S) => pausedWithout(S, ["code_review"]), "command"],
     ["a node never started, with no session to copy", (S) => S.bundles[byBead(S, "kraft-f5d3")], "agent"],
   ])("a steered attempt of %s is that task's own kind", (_name, pick, kind) => {
     const { S, T } = live();
@@ -179,6 +330,25 @@ describe("taskKind, and what a real frozen chain holds", () => {
     expect(nodeTasks(REAL, node)?.map((t) => t.path) ?? null).toEqual(paths);
   });
 
+  const SHIPPED = frozenOf("default");
+  it.each([
+    ["a builtin's ref", "verification.tests.test_changed_scopes", "kraft.verify_changed_test_scopes"],
+    ["a forge task's target", "draft_merge_request.open.open", "mr.open_draft"],
+    ["two tasks that share an id run each its own: external_approval's await", "external_approval.main.await", "mr.external_approval"],
+    ["and post_merge_ci's", "post_merge_ci.main.await", "mr.post_merge_ci"],
+    ["a fix loop's forge step", "merge_request_feedback.fix_loop.sync.sync", "mr.sync"],
+    ["an agent's task runs nothing", "implementation.main.implement", null],
+  ])("taskRun on the shipped chain: %s", (_name, hook, run) => {
+    expect(taskRun(SHIPPED, hook)).toBe(run);
+  });
+  it("every builtin and forge task of the shipped chains prints what it ran", () => {
+    for (const template of ["default", "quick-task"]) {
+      const frozen = frozenOf(template);
+      const missing = [...kindsOf({ item: { materialized_chain: frozen } } as ItemBundle)].filter(([, kind]) => kind !== "agent").map(([hook]) => hook).filter((hook) => !RUNS[taskRun(frozen, hook) ?? ""]);
+      expect(missing).toEqual([]);
+    }
+  });
+
   it.each([
     ["an escalation turn", null, "escalation", false, true],
     ["a task the chain names as a forge call", REAL, "merge_request_feedback.ci.await_ci", true, false],
@@ -201,6 +371,10 @@ describe("what a command prints", () => {
   it.each(["paused", "waiting", "capped_out", "needs_context", "rate_limited"])("a run stopped as %s has printed what a running one has, not the finished output", (status) => {
     for (const task of Object.keys(RUNS).filter((t) => RUNS[t].partial)) expect(runOutput(task, status, MR)).toEqual(runOutput(task, "running", MR));
   });
+  it("a forge call's failure names its route as the transport does, with the placeholders as written", () => {
+    expect(runOutput("mr.open_draft", "failed", "!1").join("\n")).toContain("POST repos/{owner}/{repo}/pulls: ");
+  });
+
   it.each(Object.keys(RUNS))("%s: a finished run prints something", (task) => {
     expect(runOutput(task, "done", MR).length).toBeGreaterThan(0);
   });

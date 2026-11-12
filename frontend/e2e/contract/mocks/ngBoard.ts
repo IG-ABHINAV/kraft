@@ -1,6 +1,7 @@
 import { hex, repo, t, type ItemBundle, type Variant } from "./fixtures";
 import draftViews from "./draftViews.json" with { type: "json" };
-import { buildNeverStarted, buildNgItem, NG_NODES, type NgScenario } from "./ngItems";
+import { chainOf } from "./ngChain";
+import { buildNeverStarted, buildNgItem, type NgScenario } from "./ngItems";
 
 /**
  * The board's list (ux2-W6): one row per kind of row AreaBoard.dc.html
@@ -19,11 +20,17 @@ const LONG_R = (name: string) => `/Volumes/Work/clients/acme-corporation/monorep
 
 /** The capped sample stopped instead by its $5 spend cap: its stop, its last event and its spend all say so. `board._stop`
  *  names a budget stop's scope; `work_item` is the item's own cap, the one `/budget/raise` takes. */
+/** The capped sample's session ran to its end instead: no time cap was reached. */
+function noTimeCap(b: ItemBundle) {
+  b.events = b.events.filter((e) => e.type !== "time_cap_reached");
+  b.events.forEach((e, n) => { e.seq = n + 1; });
+}
+
 function spendCapped(i: any, b: ItemBundle) {
-  const reason = "Spend cap reached · $5.00 of $5.00";
-  // A budget stop names its scope, not the cap stop's `limit`.
-  const { limit: _limit, raisable: _raisable, ...stop } = i.stop;
-  i.stop = { ...stop, kind: "budget", reason, facts: {}, scope: "work_item" };
+  const reason = "budget cap reached: $5.00 spent on this work item, cap $5.00. Nothing new was started; a running agent was not interrupted.";
+  noTimeCap(b);
+  // A budget stop names its scope (`board._stop`).
+  i.stop = { ...i.stop, kind: "budget", reason, facts: {}, scope: "work_item" };
   const last = [...b.events].reverse().find((e) => e.type === "work_item_needs_human")!;
   last.payload = { node_id: last.payload.node_id, reason, kind: "budget", budget: { scope: "work_item", spent_usd: 5, cap_usd: 5 } };
   // Its sessions' costs scaled to the $5 it spent, and its usage read off them again.
@@ -32,12 +39,12 @@ function spendCapped(i: any, b: ItemBundle) {
   for (const s of b.sessions) if (s.cost_usd != null) s.cost_usd = Math.round((s.cost_usd * 5 / was) * 10_000) / 10_000;
   const sum = (ss: any[]) => Math.round(ss.reduce((a, s) => a + (s.cost_usd ?? 0), 0) * 10_000) / 10_000;
   i.usage = { ...i.usage, total: { ...i.usage.total, cost_usd: sum(b.sessions) }, by_node: i.usage.by_node.map((r: any) => ({ ...r, cost_usd: sum(b.sessions.filter((s) => s.node_id === r.node)) })) };
-  i.budget_cap = { ...i.budget_cap, spent_usd: 5 };
+  i.budget_cap = { ...i.budget_cap, cap_usd: 5, spent_usd: 5 };
   // A spend cap interrupts nothing: the session that spent the last of it ran to its end (done, its summary written,
   // its usage on its `worker_session_exited` as `store.session_exited` writes it), and the walk stopped before the next
   // agent task launched (`dispatch.over_budget`). No session is capped out: that is a time cap's or a loop's mark.
   for (const s of b.sessions.filter((x) => x.status === "capped_out")) {
-    Object.assign(s, { status: "done", session_summary_ref: `.engineering/sessions/${s.id}.md`, tokens_cache_write: 0, tokens_cache_read: 0 });
+    Object.assign(s, { status: "done", session_summary_ref: `items/${i.id}/sessions/${s.id}/out/summary.md`, tokens_cache_write: 0, tokens_cache_read: 0 });
     const exit = b.events.find((e) => e.type === "worker_session_exited" && e.payload.session_id === s.id)!;
     exit.payload = { session_id: s.id, status: "done", wall_ms: s.wall_ms, model: s.model, tokens_in: s.tokens_in, tokens_cache_write: 0, tokens_cache_read: 0, tokens_out: s.tokens_out, cost_usd: s.cost_usd };
   }
@@ -48,7 +55,8 @@ function spendCapped(i: any, b: ItemBundle) {
  *  item stopped for the person instead of switching the checkout back. Built on the capped sample's attempt. */
 function checkoutMoved(i: any, b: ItemBundle) {
   const s = b.sessions.find((x) => x.status === "capped_out")!;
-  Object.assign(s, { status: "done", session_summary_ref: `.engineering/sessions/${s.id}.md` });
+  noTimeCap(b);
+  Object.assign(s, { status: "done", session_summary_ref: `items/${i.id}/sessions/${s.id}/out/summary.md` });
   const exit = b.events.find((e) => e.type === "worker_session_exited" && e.payload.session_id === s.id)!;
   exit.payload = { ...exit.payload, status: "done" };
   const branch = `kraft/${i.id}`;
@@ -67,7 +75,7 @@ function checkoutMoved(i: any, b: ItemBundle) {
 /** The running row, in kraft-vscode's own checkout: what `waitsForCheckout` waits behind. */
 function runsInPlace(i: any) {
   i.progress = { current: 2, total: 3, title: "Thread findings into the prompt" };
-  i.step = { index: 2, count: 3, name: "review", task: "code_review" };
+  i.step = { index: 2, count: 2, name: "review", task: "code_review" };
   Object.assign(i, { in_place: true, worktree_path: i.repo });
 }
 
@@ -115,20 +123,19 @@ const LONG_TAIL = " so the board has to ellipsize a title that runs far past the
 function build(rows: Row[], variant: Variant, seed0: number, bundles: Record<string, ItemBundle>): string[] {
   const long = variant === "long";
   return rows.map((r, n) => {
-    const b = r.fresh ? buildNeverStarted(seed0 + n, long ? "long" : "default") : buildNgItem(r.sc, seed0 + n, long ? "long" : "default");
+    const b = r.fresh ? buildNeverStarted(seed0 + n, long ? "long" : "default", r.chain) : buildNgItem(r.sc, seed0 + n, long ? "long" : "default", r.chain);
     const i = b.item;
     i.id = hex(seed0 + n);
     i.title = long ? r.title + LONG_TAIL : r.title;
     i.repo = (long ? LONG_R : R)(r.repo);
     i.bead_id = r.bead;
-    i.chain_template = r.chain ?? "default";
-    i.chain_definition = { ...i.chain_definition, template_id: i.chain_template };
     i.updated_at = t(130 - r.age);
     i.created_at = t(130 - r.age - 90);
     if (i.archived_at) i.archived_at = t(130 - r.age + 30);
     r.tweak?.(i, b);
     for (const s of b.sessions) s.work_item_id = i.id;
-    for (const e of b.events) e.work_item_id = i.id;
+    // Its own repo where an event names one (`work_item_created`, `branch_pushed`).
+    for (const e of b.events) { e.work_item_id = i.id; if (e.payload.repo) e.payload.repo = i.repo; }
     if (r.fresh) b.events.push({ seq: 1, work_item_id: i.id, type: "work_item_created", payload: { title: i.title, repo: i.repo, chain_template: i.chain_template }, node_id: null, created_at: i.created_at });
     bundles[i.id] = b;
     return i.id;
@@ -144,14 +151,12 @@ export function buildNgBoard(variant: Variant, bundles: Record<string, ItemBundl
   return { list, archived: build(ARCHIVED, variant, 1500, bundles) };
 }
 
-/** The composer's chains (ux2-W6 F), V1 as the server resolves them: spec and
- *  its gate covered by an attached spec, plan and its gate by a plan. */
-const COVER: Record<string, string> = { spec: "spec", spec_approval: "spec", plan: "plan", plan_approval: "plan" };
-const v1 = (ids: string[]) => NG_NODES.filter((n) => ids.includes(n.id)).map((n) => ({ ...n, covered_by: COVER[n.id] ?? null }));
-export const NG_CHAINS = [
-  { id: "default", nodes: v1(NG_NODES.map((n) => n.id)), gates: 4 },
-  { id: "docs_only", nodes: v1(["spec", "spec_approval", "implementation", "work_brief", "merge_request"]), gates: 1 },
-].map((c) => ({ ...c, gates: c.nodes.filter((n) => n.kind === "gate").length }));
+/** The composer's chains (ux2-W6 F), as the server resolves them: the items' own (ngChain.ts), each node with the
+ *  attachment that covers it (`covered_by`, as recorded). The composer, the phone and the dry run all read this list. */
+export const NG_CHAINS = ["default", "quick-task", "docs_only"].map((id) => {
+  const c = chainOf(id)!;
+  return { id, nodes: c.nodes, gates: c.nodes.filter((n) => n.kind === "gate").length };
+});
 /** What ngDryRun reads of a node. Every recorded node has all four (`fix_loop` is null without a loop), so a
  *  re-recording that drops one fails tsc. */
 type DryRunNode = { id: string; kind: string; covered_by: string | null; fix_loop: unknown };
@@ -175,13 +180,21 @@ export const NG_WORKSPACES = {
 export function ngDryRun(body: { chain_template?: string; attachments?: { kind: string; path: string }[]; skip_nodes?: string[] }) {
   const missing = (body.attachments ?? []).find((a) => a.path.includes("missing"));
   if (missing) return { status: 422, body: { detail: `attachment not found: ${missing.path}` } };
-  const tpl = [...NG_CHAINS, NG_EXTENDING_CHAIN].find((c) => c.id === body.chain_template) ?? NG_CHAINS[0];
+  const chain = body.chain_template ?? "default";
+  const tpl = [...NG_CHAINS, NG_EXTENDING_CHAIN].find((c) => c.id === chain);
+  // `deps.resolve_chain_or_422`'s answer for a chain the library cannot resolve, in the resolver's words (`library.resolve_chain`).
+  const known = [...NG_CHAINS, NG_EXTENDING_CHAIN].map((c) => `'${c.id}'`).join(", ");
+  if (!tpl) return { status: 422, body: { detail: `chain '${chain}': no chain '${chain}' in this library; known chains: [${known}]` } };
   const kinds = new Set((body.attachments ?? []).map((a) => a.kind));
-  const skipped = tpl.nodes.flatMap((n) =>
+  const skipped = (tpl.nodes as DryRunNode[]).flatMap((n) =>
     n.covered_by && kinds.has(n.covered_by) ? [{ node: n.id, why: "covered_by", kind: n.covered_by }] : (body.skip_nodes ?? []).includes(n.id) ? [{ node: n.id, why: "skip" }] : []);
-  const nodes = tpl.nodes.filter((n) => !skipped.some((s) => s.node === n.id));
+  const nodes = (tpl.nodes as DryRunNode[]).filter((n) => !skipped.some((s) => s.node === n.id));
+  // A fix loop's cap: its frozen `max_attempts`, and the policy's default wall clock (`executor.fix_loop_cap`). A chain
+  // the mock has no frozen chain for (team-default extends default) reads default's.
+  const loops = Object.fromEntries((chainOf(chain) ?? chainOf("default")!).frozen.nodes.filter((n: any) => n.fix_loop).map((n: any) => [n.id, n.fix_loop.max_attempts]));
   return { status: 200, body: {
     dry_run: true, nodes, skipped, gates: nodes.filter((n) => n.kind === "gate").map((n) => n.id),
-    caps: { budget_usd: 5, budget_source: "policy", daily_usd: 50, nodes: Object.fromEntries(nodes.filter((n) => n.fix_loop).map((n) => [n.id, { attempts: 3, wall_clock_s: 1800 }])) },
+    // The shipped policy's caps (`config/policy.yaml`: `work_item_usd: 10`, `daily_usd: 50`).
+    caps: { budget_usd: 10, budget_source: "policy", daily_usd: 50, nodes: Object.fromEntries(nodes.filter((n) => n.fix_loop).map((n) => [n.id, { attempts: loops[n.id] ?? 3, wall_clock_s: 3600 }])) },
   } };
 }
