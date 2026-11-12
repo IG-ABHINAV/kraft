@@ -17,7 +17,7 @@ from textual.binding import Binding, BindingType
 from textual.content import Content
 from textual.widgets import Input, RichLog, Static
 
-from kraft import answers, client, render
+from kraft import answers, client, render, update
 from kraft.console import runner, tail, words
 from kraft.console.panels import Rule
 from kraft.console.screens import View
@@ -139,6 +139,16 @@ def summary(health: dict, release: dict | None, *, answered: bool = True) -> Con
         else ("none waiting", "$kraft-muted"),
         *((f"\n  {line}", "$error") for line in problems),
     )
+
+
+def _crosses_major(installed: str, target: str | None) -> bool:
+    """Whether going from `installed` to `target` changes the major version:
+    the confirm says so before such a release is marked, since a major does
+    not carry the old one's work over. A version that does not parse never
+    crosses one it cannot name."""
+    here = update._parts(installed)
+    there = update._parts(target or "")
+    return bool(here and there) and here[:1] != there[:1]
 
 
 class Server(View):
@@ -369,15 +379,27 @@ class Server(View):
             self.app.notify(f"{tag} will not be installed.", markup=False)
             return
         if state.get("behind"):
-            tag = state.get("latest")
+            # What the web UI offers first (updateWords.ts `offers()`): the
+            # newest release inside the installed major, so a minor or patch
+            # installs without crossing one. A newer major is marked only when
+            # it is all there is, and the confirm then names it as one.
+            installed = state.get("installed") or ""
+            in_major = state.get("latest_in_major")
+            tag = (
+                in_major
+                if in_major and update._parts(in_major) > update._parts(installed)
+                else state.get("latest")
+            )
             sentence, _, verb = runner.ask(["admin", "update"]) or ("", None, "Update")
-            if not tag:  # `behind` came with no release to name: no answer
-                self.app.notify("The release feed did not answer; try again.", severity="warning")
-                return
+            lines = [sentence]
+            if tag and tag != state.get("latest"):
+                # `latest_in_major` is not the newest release over all: the
+                # stock sentence would claim it is.
+                lines[0] = f"This installs {tag}, the newest release in the installed major."
+            if _crosses_major(installed, tag):
+                lines.append(f"{tag} is a new major version.")
             if not await self.app.confirm(
-                f"Install {tag} on the server when it is free?",
-                [sentence],
-                yes=verb,
+                f"Install {tag} on the server when it is free?", lines, yes=verb
             ):
                 return
             try:
