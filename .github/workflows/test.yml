@@ -29,7 +29,7 @@ permissions:
 
 env:
   BD_VERSION: "1.2.2"
-  # Every job but the `test` matrix runs on the newest supported Python. With a
+  # Every job but the `test` matrix runs on 3.14, the Python CI builds with. With a
   # floor of 3.12, an unpinned `uv sync` would take whatever 3.12+ the runner
   # has. The `test` matrix sets its own at job level.
   UV_PYTHON: "3.14"
@@ -41,11 +41,11 @@ jobs:
     # builds it), .github/assets/, and docs/*.md (not docs/intent/, whose pins
     # the test job checks). `python` is false for those and for one that also
     # changes frontend/, with nothing else and no .py file among them: no
-    # Python moved, so the unit tier runs on the newest Python alone and the
-    # real-CLI tier skips. `pythons` is the unit tier's matrix: all three on a
-    # push to main, the floor and the newest on a pull request (3.13 sits
-    # between them, and a failure on it alone was as rare as on 3.12 or 3.14
-    # alone, and read as a flake), the newest alone when `python` is false.
+    # Python moved, so the unit tier runs on 3.14 alone (the Python CI builds
+    # with) and the real-CLI tier skips. `pythons` is the unit tier's matrix:
+    # all four on a push to main, the floor and 3.14 on a pull request (main
+    # still runs 3.13 and 3.15; a failure on 3.13 alone was as rare as on 3.12
+    # or 3.14 alone, and read as a flake), 3.14 alone when `python` is false.
     # Pushes to main run everything, and so does a PR if
     # this job fails: nothing is trimmed or skipped except on an explicit
     # 'false'. The unit tests that read the docs still run on a docs-only
@@ -66,7 +66,7 @@ jobs:
           code=true
           python=true
           # No spaces: the value is one `name=value` line in $GITHUB_OUTPUT.
-          pythons='["3.12","3.13","3.14"]'
+          pythons='["3.12","3.13","3.14","3.15"]'
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             pythons='["3.12","3.14"]'
             git fetch --no-tags --depth=1 origin "$BASE"
@@ -120,7 +120,7 @@ jobs:
       # Needs the release tags the checkout above fetches (fetch-depth: 0).
       - run: uv run python dev/check_docs_added_in.py
       # The docs style (.vale.ini): the same paths as the justfile's vale_paths.
-      - run: uv run vale docsite/content README.md CONTRIBUTING.md ARCHITECTURE.md CLAUDE.md AGENTS.md RELEASING.md SECURITY.md docs/testing.md vscode/README.md
+      - run: uv run vale docsite/content README.md CONTRIBUTING.md ARCHITECTURE.md CLAUDE.md AGENTS.md RELEASING.md SECURITY.md docs/testing.md docs/agent-tooling.md docs/ci.md docs/maintainers.md docs/writing-docs.md vscode/README.md plugins/kraft/README.md plugins/kraft-lite/README.md addons/kraft-superpowers/README.md
       # An add-on of Kraft's own collection that changed against the pull
       # request's base, or across a push to main, has a higher version.
       - run: uv run python dev/check_addon_versions.py ${{ github.event_name == 'push' && format('--base {0}', github.event.before) || '' }}
@@ -128,15 +128,15 @@ jobs:
 
   test:
     # The unit tier on the supported Pythons (`requires-python` in pyproject.toml
-    # is the floor, 3.12; the newest is 3.14), each in four shards
+    # is the floor, 3.12; the newest is 3.15), each in four shards
     # (`KRAFT_TEST_SHARD`, read by the repo-root conftest.py). One wheel serves
     # all of them, so this is the only place a version gap shows. `changes`
-    # picks the Pythons: all three on a push to main, the floor and the newest
-    # on a pull request, and when it fails, all three. A pull request that
-    # changes no Python runs the newest alone: every unit test still runs,
+    # picks the Pythons: all four on a push to main, the floor and 3.14
+    # on a pull request, and when it fails, all four. A pull request that
+    # changes no Python runs 3.14 alone: every unit test still runs,
     # since some read frontend/ files, but nothing in it can differ by Python
-    # version. Coverage and junit come from the newest Python only, one file
-    # per shard, and `test-report` below puts them together. fail-fast off, so
+    # version. Coverage and junit come from 3.14 only, one file per
+    # shard, and `test-report` below puts them together. fail-fast off, so
     # one leg's failure doesn't hide another's.
     name: test (python ${{ matrix.python-version }}, ${{ matrix.shard }}/4)
     needs: changes
@@ -145,7 +145,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ${{ fromJSON(needs.changes.outputs.pythons || '["3.12", "3.13", "3.14"]') }}
+        python-version: ${{ fromJSON(needs.changes.outputs.pythons || '["3.12", "3.13", "3.14", "3.15"]') }}
         shard: [1, 2, 3, 4]
     # Job-level, so it beats the workflow's UV_PYTHON for `uv run` too: `uv run`
     # rebuilds the venv whenever UV_PYTHON names another version than the one
@@ -242,7 +242,7 @@ jobs:
       - if: >-
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository
-        uses: mikepenz/action-junit-report@8a133bfa3ecb0ea9024c1e2ae788b4c25f6cdb9d # v6.6.2
+        uses: mikepenz/action-junit-report@a16be3a69023e9bd7e748ede768b3282ea7b30ce # v6.7.1
         with:
           report_paths: junit-*.xml
       # On pull_request it posts or updates the PR comment; on push to main it
@@ -417,7 +417,32 @@ jobs:
       - name: install bubblewrap
         # The os sandbox's tests run bwrap as the runner's own user. Ubuntu 24.04
         # blocks unprivileged user namespaces for it without an AppArmor profile.
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        # When apt can't fetch from its mirror (2026-11-11: the runners could not
+        # resolve azure.archive.ubuntu.com for hours, and `apt-get update` only
+        # warns), the package lists still name the file and its SHA256: fetch it
+        # from the Ubuntu archive, or a mirror off ubuntu.com when that name
+        # doesn't resolve either, and install it only if the sum matches.
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y bubblewrap || true
+          fi
+          if ! command -v bwrap >/dev/null; then
+            version=$(apt-cache policy bubblewrap | awk '/Candidate:/ {print $2}')
+            meta=$(apt-cache show "bubblewrap=$version" 2>/dev/null || true)
+            file=$(awk '/^Filename:/ {print $2; exit}' <<<"$meta")
+            sum=$(awk '/^SHA256:/ {print $2; exit}' <<<"$meta")
+            deb="$RUNNER_TEMP/bubblewrap.deb"
+            for host in https://archive.ubuntu.com/ubuntu https://security.ubuntu.com/ubuntu \
+              https://mirrors.edge.kernel.org/ubuntu https://mirrors.mit.edu/ubuntu; do
+              [ -n "$file" ] && [ -n "$sum" ] || break
+              if curl -fsSL --retry 3 -o "$deb" "$host/$file" && echo "$sum  $deb" | sha256sum -c -; then
+                sudo dpkg -i "$deb" || true
+                break
+              fi
+            done
+          fi
+          command -v bwrap >/dev/null || { echo "::error::could not install bubblewrap"; exit 1; }
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: uv sync --frozen
       - run: uv run pytest -m e2e -n logical --durations=25 -rs --junitxml=e2e-junit.xml
         env:
@@ -579,7 +604,7 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright:v1.64.0-noble
+      image: mcr.microsoft.com/playwright:v1.65.0-noble
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -589,12 +614,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl jq python3
+          # No apt-get: the image already has git, curl and ca-certificates, and
+          # node reads the JSON, so an unreachable apt mirror (2026-11-11) can't
+          # fail this job. uv brings its own Python.
           case "$(uname -m)" in aarch64|arm64) BD_ARCH=arm64 ;; *) BD_ARCH=amd64 ;; esac
           # Through the API, as e2e-cli's install bd step says.
           asset=$(curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/gastownhall/beads/releases/tags/v${BD_VERSION}" |
-            jq -r --arg n "beads_${BD_VERSION}_linux_${BD_ARCH}.tar.gz" '.assets[] | select(.name == $n) | .url')
+            BD_ASSET="beads_${BD_VERSION}_linux_${BD_ARCH}.tar.gz" node -e '
+              const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+              const a = r.assets.find((x) => x.name === process.env.BD_ASSET);
+              if (a) console.log(a.url);')
           test -n "$asset" || { echo "no beads asset for v${BD_VERSION} linux ${BD_ARCH}"; exit 1; }
           curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/bd.tar.gz" "$asset"
@@ -647,7 +677,7 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     container:
-      image: mcr.microsoft.com/playwright:v1.64.0-noble
+      image: mcr.microsoft.com/playwright:v1.65.0-noble
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: npm ci

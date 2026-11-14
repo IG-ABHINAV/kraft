@@ -356,6 +356,8 @@ def _post_default(client, repo):
             "repo": str(repo),
             "chain_template": "default",
             "autostart": True,
+            # The default chain's gates have a reviewer; these tests act at the gate.
+            "auto_gate": False,
         },
     ).json()["id"]
 
@@ -724,3 +726,11 @@ def _on_api_account(
             )
         }
     )
+
+
+def assert_refusal_hides_the_override(response) -> None:
+    """An agent reads its refusals; one that names how to be recorded as a person gets used."""
+    assert response.status_code == 403, response.text
+    text = response.text.lower()
+    assert "kraft_client" not in text
+    assert "override" not in text
