@@ -264,6 +264,25 @@ async def test_a_step_that_cannot_park_says_the_local_holder_of_its_test_group(w
     placement.release()
 
 
+async def test_a_local_only_holder_is_not_named_when_the_step_cannot_run_there(
+    world,
+):
+    world.hub.apply(_workers(local_group=False))  # the local worker is not in the runner group
+    world.refuse.update({"a", "b"})
+    local_link.current().take("other/3", "heavy")  # the local worker holds the group
+    async with _placed(world, "w/2", concurrency_group="heavy") as p:
+        assert p.wait == "waiting for a machine in gpu"
+
+
+async def test_a_remote_holder_of_the_test_group_wins_over_the_local_holder(world):
+    world.refuse.update({"a", "b"})
+    world.hub.adopt("a", "other/1", "heavy")  # a remote machine holds the group
+    world.hub.apply(_workers(a={"capacity": 2}, b={}))  # a keeps a free slot while holding it
+    local_link.current().take("other/3", "heavy")  # the local worker holds it too
+    async with _placed(world, "w/2", concurrency_group="heavy") as p:
+        assert p.wait == "waiting for test group heavy: other is running it on a"
+
+
 async def test_a_step_that_cannot_park_waits_for_whichever_side_frees_first(world):
     world.refuse.update({"a", "b"})
     link = local_link.current()

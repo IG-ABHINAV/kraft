@@ -195,9 +195,15 @@ class Placement:
             )
             if verdict.group_held:
                 self.wait = verdict.wait
-        if self._concurrency_group and not self.wait.startswith("waiting for test group "):
+        if (
+            self._concurrency_group
+            and local_ok
+            and not self.wait.startswith("waiting for test group ")
+        ):
             # The group is held only by the local worker: the remote verdict above cannot
             # say so, and "waiting for a machine" names neither the group nor its holder.
+            # Only when the step may run there: a local worker outside the runner group
+            # cannot be what it waits for (it holds another scope of the same group).
             if link is not None and (
                 holder := link.group_holder(self._concurrency_group, self._key)
             ):
