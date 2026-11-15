@@ -59,6 +59,7 @@ from kraft.executor.context import (
 from kraft.remote import launch as _remote_launch
 from kraft.remote import local_link as _local_link
 from kraft.remote import placement
+from kraft.remote import protocol as _remote_protocol
 from kraft.remote import runs as _remote_runs
 from kraft.store import _now as _now
 from kraft.templates import revision
@@ -823,6 +824,7 @@ async def _save_carried(
     results: list[str],
     sandbox: dict | None,
     runner: str | None,
+    base: str | None,
 ) -> None:
     """Save the item's carried files as the repo's newest copy, after a round
     that may have updated them. Only when every guard holds: a targeted round in
@@ -830,7 +832,9 @@ async def _save_carried(
     could plant a record the host then trusts), in the item's own worktree (an
     in-place item's folder is the person's checkout, a workspace member's a
     mount below the root). `kraft.carried.save` itself saves only when a carried
-    file differs from the baseline. A failed save never fails verification."""
+    file differs from the baseline and `base`, the commit the branch forks from
+    (`_effective_base`), is not older than the saved copy's. A failed save never
+    fails verification."""
     if not (repo_entry and repo_entry.carry):
         return
     if suite is not TestSuite.TARGETED or not results or any(r != "done" for r in results):
@@ -847,6 +851,7 @@ async def _save_carried(
             Path(worktree),
             repo_entry.carry,
             item_paths.carried_record(run_dirs, row["id"]),
+            base=base,
         )
     except OSError as exc:
         logger.warning("carried files of %s were not saved: %s", row["id"], exc)
@@ -983,6 +988,9 @@ async def _run_changed_test_scopes(
             "session_id": db.read(lambda c, w=common["work_item_id"]: store.new_session_id(c, w)),
         }
 
+        def abandon() -> bool:
+            return _item_paused(db, work_item_row["id"])
+
         async def go(on: str | None, claim, time_cap: _caps.Deadline | None) -> str:
             return await _subprocess.run_task(
                 db,
@@ -1010,28 +1018,35 @@ async def _run_changed_test_scopes(
                 placed_claim=claim,
                 post_resolve=no_recipe if Path(cmd[0]).name == "just" else None,
                 concurrency_group=group,
+                abandon=abandon,
                 **scope_common,
             )
 
-        if not _is_group(runner):
-            return await go(runner, None, time_cap)
+        try:
+            if not _is_group(runner):
+                return await go(runner, None, time_cap)
 
-        async def attempt(on, claim, waited_s):
-            return await go(on, claim, _remote_launch.extend(time_cap, waited_s))
+            async def attempt(on, claim, waited_s):
+                return await go(on, claim, _remote_launch.extend(time_cap, waited_s))
 
-        # Each scope places itself: one may run remote while the next runs locally.
-        return await _remote_launch.run_placed(
-            db,
-            work_item_row,
-            node.id,
-            task.path,
-            runner,
-            [repo_entry] if repo_entry is not None else [],
-            session_id=scope_common["session_id"],
-            resume=False,
-            attempt=attempt,
-            concurrency_group=group,
-        )
+            # Each scope places itself: one may run remote while the next runs locally.
+            return await _remote_launch.run_placed(
+                db,
+                work_item_row,
+                node.id,
+                task.path,
+                runner,
+                [repo_entry] if repo_entry is not None else [],
+                session_id=scope_common["session_id"],
+                resume=False,
+                attempt=attempt,
+                concurrency_group=group,
+                abandon=abandon,
+            )
+        except _remote_protocol.StepAbandoned:
+            # A queued scope's item was paused (a broken base cannot cancel the walk): SCOPE
+            # tier `stop`, so the round ends `paused` and `resume` runs the node again.
+            return "paused"
 
     # What the round picked, before any of it runs: a node's view draws the scopes still to
     # come beside the ones that have started. One per repository, in the order they run, an
@@ -1089,6 +1104,7 @@ async def _run_changed_test_scopes(
         results=results,
         sandbox=sandbox,
         runner=runner,
+        base=base,
     )
     stopped = next((s for s in results if s in _SCOPE_STOP_STATUSES), None)
     if stopped is not None:
@@ -1463,6 +1479,18 @@ def _reviewers(task: ForgeTask, node_id: str, row, launch: LaunchContext | None)
     )
 
 
+def _item_paused(db, work_item_id: str) -> bool:
+    """Whether the item reads `paused` right now. A broken base's pause
+    (`store.pause_for_broken_base`) cannot cancel the item's walk, so whatever is queued or
+    about to launch asks this."""
+    row = db.read(
+        lambda c: c.execute(
+            "SELECT status FROM work_items WHERE id = ?", (work_item_id,)
+        ).fetchone()
+    )
+    return row is not None and row["status"] == WorkItemStatus.PAUSED
+
+
 async def dispatch_node(
     db, run_dirs, task: ResolvedTask, node: ResolvedNode, work_item_row, worktree, **kw
 ) -> str:
@@ -1483,12 +1511,7 @@ async def dispatch_node(
     # one node, with nothing running for it to signal, this is what stops it.
     # Escalations and gate replies, which a paused item does run, have doors
     # of their own.
-    status = db.read(
-        lambda c: c.execute(
-            "SELECT status FROM work_items WHERE id = ?", (work_item_row["id"],)
-        ).fetchone()
-    )
-    if status is not None and status["status"] == WorkItemStatus.PAUSED:
+    if _item_paused(db, work_item_row["id"]):
         return "paused"
     since = db.read(
         lambda c: c.execute("SELECT COALESCE(MAX(rowid), 0) FROM worker_sessions").fetchone()[0]
@@ -1884,6 +1907,9 @@ async def _dispatch_task_in(
             forges_error=forges_error,
             reviewers=_reviewers(t, node.id, work_item_row, launch),
             ci_checks=launch.repo_entry.ci_checks if launch and launch.repo_entry else True,
+            post_merge_publish_jobs=(
+                launch.repo_entry.post_merge_publish_jobs if launch and launch.repo_entry else ()
+            ),
             # The item's folder: for a worktree item, not the repo, whose
             # checkout is on whatever the human has. Every forge call names
             # the branch, so an in-place item's folder serves as well.
@@ -2563,6 +2589,7 @@ async def _launch_agent(
             cwd=worktree,
             repo_entry=launch.repo_entry if launch else None,
             review_package=package,
+            read_only=node.checks_read_only(task),
             bot_feedback=feedback,
             time_cap=time_cap,
             harness_id=harness_id,

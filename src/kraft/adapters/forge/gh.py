@@ -312,6 +312,20 @@ def _red_jobs(rows: list[dict], *, url: str) -> tuple[FailedJob, ...]:
     )
 
 
+def _cancelled_no_step_jobs(rows: list[dict]) -> tuple[FailedJob, ...]:
+    """Return queued jobs GitHub cancelled before assigning them a runner."""
+    return tuple(
+        FailedJob(
+            str(row.get("name", "")),
+            "cancelled",
+            "cancelled_no_steps",
+            str(row.get("html_url") or "") or None,
+        )
+        for row in rows
+        if str(row.get("conclusion") or "").upper() == "CANCELLED" and row.get("steps") == []
+    )
+
+
 def _runs_state(runs: list[dict]) -> tuple[CIState, tuple[str, ...]]:
     """One state for workflow runs, and a line per run: pending until every run
     has completed, then red if any is, green if all settled well, and pending
@@ -550,7 +564,15 @@ class GhCli(mr_ops.CliWaits):
             state = "success"
         else:
             state = "pending"
-        failed_jobs = _red_jobs(checks, url="detailsUrl")
+        failed_jobs = list(_red_jobs(checks, url="detailsUrl"))
+        if state == "failed":
+            run_ids = {str(c.get("workflowRunId")) for c in checks if c.get("workflowRunId")}
+            for run_id in sorted(run_ids):
+                try:
+                    rows = await self._read_jobs(repo, run_id)
+                except ForgeError:
+                    continue
+                failed_jobs.extend(_cancelled_no_step_jobs(rows))
         return CIStatus(
             state=state,
             url=str(data.get("url", "")),
@@ -559,7 +581,7 @@ class GhCli(mr_ops.CliWaits):
             merge_detail=detail,
             block_reason=block_reason,
             sha=sha,
-            failed_jobs=failed_jobs,
+            failed_jobs=tuple(failed_jobs),
             cancelled_at=_cancelled_at(checks, at="completedAt"),
         )
 
@@ -1105,27 +1127,22 @@ class GhCli(mr_ops.CliWaits):
     async def _run_failure(
         self, repo: Path, run_id: str
     ) -> tuple[tuple[str, ...], tuple[FailedJob, ...]]:
-        """A failed run's red jobs, and the tail of the first two jobs' failed
-        steps' logs. A job list that cannot be read is `_UNREADABLE_JOBS`, not
-        an empty one, which `ci.is_infra_red` would read as a runner problem."""
+        """A failed run's red jobs and queued cancellations, plus the tail of
+        the first two red jobs' logs. A job list that cannot be read is
+        `_UNREADABLE_JOBS`, not an empty one, which `ci.is_infra_red` would
+        read as a runner problem."""
         if not run_id:
             return (), _UNREADABLE_JOBS
         try:
-            # strict: a capped list is not the whole run, and a missing "jobs" raises
-            data = await self._paged(
-                repo,
-                f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs",
-                key="jobs",
-                strict=True,
-            )
+            rows = await self._read_jobs(repo, run_id)
         except ForgeError:
             return (), _UNREADABLE_JOBS
-        rows = [j for j in data if isinstance(j, dict)]
-        failed_jobs = _red_jobs(rows, url="html_url")
+        red_jobs = list(_red_jobs(rows, url="html_url"))
+        failed_jobs = [*red_jobs, *_cancelled_no_step_jobs(rows)]
         red = [j for j in rows if str(j.get("conclusion") or "").upper() in _GH_RED]
         detail: tuple[str, ...] = ()
         # ponytail: first two failed jobs, last 15 log lines each, as `glab`.
-        for job, row in zip(failed_jobs[:2], red[:2], strict=True):
+        for job, row in zip(red_jobs[:2], red[:2], strict=True):
             reason = job.failure_reason
             detail += (f"job {job.name}: failed" + (f" ({reason})" if reason else ""),)
             try:
@@ -1139,7 +1156,17 @@ class GhCli(mr_ops.CliWaits):
                 continue
             log = gq.failed_step_log(row, whole.text)
             detail += tuple(f"  {line}" for line in render.terminal_lines(log.strip())[-15:])
-        return detail, failed_jobs
+        return detail, tuple(failed_jobs)
+
+    async def _read_jobs(self, repo: Path, run_id: str) -> list[dict]:
+        """Read every job for an Actions run without fetching job logs."""
+        data = await self._paged(
+            repo,
+            f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs",
+            key="jobs",
+            strict=True,
+        )
+        return [j for j in data if isinstance(j, dict)]
 
     async def find_mr(self, *, repo: Path, branch: str) -> MRRef | None:
         data = await self._gql(repo, gq.FIND_QUERY, gq.owner_vars(b=branch))
