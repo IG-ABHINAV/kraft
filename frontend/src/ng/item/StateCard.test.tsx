@@ -469,6 +469,15 @@ describe("StateCard", () => {
     await waitFor(() => expect(posts(calls)).toHaveLength(1));
   });
 
+  it.each([
+    ["a GitHub pull request #N", "https://github.com/acme/app/pull/1401", "#1401"],
+    ["a GitLab merge request !N", "https://gitlab.example/acme/app/-/merge_requests/1401", "!1401"],
+  ])("done signs %s, as the board row does", (_, url, name) => {
+    stubFetch();
+    show({ display_status: "done", stop: null, mr_ref: { number: 1401, url } });
+    expect(within(screen.getByRole("region", { name: "Done" })).getByRole("link", { name })).toHaveAttribute("href", url);
+  });
+
   it("done with no MR says none was opened; a closed one says so", async () => {
     stubFetch();
     const { unmount } = show({ display_status: "done", stop: null, mr_ref: null });
