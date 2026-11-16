@@ -174,6 +174,20 @@ def queued_verb_words(verb: str) -> str:
     return _QUEUED_VERB.get(verb) or node_words(verb)
 
 
+#: `rowText.ts`'s `mrRefText`: a merge request's number with its forge's
+#: sign, from the URL `mr_ref` carries.
+_PULL = re.compile(r"/pull/\d+(?:[/?#]|$)")
+
+
+def mr_ref_text(ref: dict | None) -> str:
+    """`mrRefText`: `#N` on GitHub (`/pull/N`), `!N` on GitLab
+    (`/-/merge_requests/N`). A URL that says neither keeps the old `!` —
+    the sign GitLab uses and the one every existing fixture already reads —
+    rather than guessing a forge from the host."""
+    ref = ref or {}
+    return f"{'#' if _PULL.search(ref.get('url') or '') else '!'}{ref['number']}"
+
+
 def _tail(row: dict, stop: dict, node: str, now: float) -> str:
     # An item with no node to name reads without "at ...", and without a leading separator.
     where = f" at {node}" if node else ""
@@ -225,7 +239,7 @@ def _tail(row: dict, stop: dict, node: str, now: float) -> str:
             return "escalation running"
         case "done":
             mr = row.get("mr_ref")
-            return f"merged !{mr['number']}" if mr else "completed"
+            return f"merged {mr_ref_text(mr)}" if mr else "completed"
         case "cancelled":
             return "cancelled"
         case _:

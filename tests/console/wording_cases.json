@@ -206,6 +206,20 @@
       "marks": ["done", "done", "done", "done", "done"]
     },
     {
+      "name": "merged-github-pull-request",
+      "row": { "display_status": "done", "current_node_id": "implement", "mr_ref": { "number": 1401, "url": "https://github.com/itsOmidKarami/kraft/pull/1401" } },
+      "group": "done",
+      "tail": "merged #1401",
+      "marks": ["done", "done", "done", "done", "done"]
+    },
+    {
+      "name": "merged-gitlab-merge-request",
+      "row": { "display_status": "done", "current_node_id": "implement", "mr_ref": { "number": 42, "url": "https://gitlab.example/acme/app/-/merge_requests/42" } },
+      "group": "done",
+      "tail": "merged !42",
+      "marks": ["done", "done", "done", "done", "done"]
+    },
+    {
       "name": "completed",
       "row": { "display_status": "done", "current_node_id": null, "mr_ref": null },
       "group": "done",
