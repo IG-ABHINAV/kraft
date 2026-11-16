@@ -9,7 +9,7 @@ import type { ChainNode, DiffFile, KraftEvent, WorkerSession } from "../../types
 import { Ban, ChevronDown, ChevronRight, CircleCheck, CircleHelp, Clock, Pause, X } from "../icons";
 import { Button } from "../ui/Button";
 import { act } from "./actions";
-import { CHECKOUT_FREES, IN_USE_BY, nameOf, slicesLine, WAITING_FOR_CHECKOUT } from "../board/rowText";
+import { CHECKOUT_FREES, IN_USE_BY, mrRefText, nameOf, slicesLine, WAITING_FOR_CHECKOUT } from "../board/rowText";
 import { admits, neverStarted, RELEASED, spentLine, strandedOneOff } from "./status";
 import { actionPath, taskName } from "./paths";
 import { standingNode } from "./cursor";
@@ -268,7 +268,7 @@ function cardFor(item: ItemDetail, h: Handlers & { steer: string; setSteer: (s: 
     const total = h.files?.length ? totals(h.files) : null;
     const took = item.running_time ? elapsed(item.running_time.running_s * 1000) : null;
     const facts: [string, ReactNode][] = [
-      ...(mr ? [["merge request", <><LinkButton href={mr.url} target="_blank" rel="noreferrer">!{mr.number}</LinkButton>{mrClosed ? " · closed on the forge" : ""}</>] as [string, ReactNode]] : []),
+      ...(mr ? [["merge request", <><LinkButton href={mr.url} target="_blank" rel="noreferrer">{mrRefText(mr)}</LinkButton>{mrClosed ? " · closed on the forge" : ""}</>] as [string, ReactNode]] : []),
       ...(h.files?.length ? [["changes", <>{plural(h.files.length, "file")} <span className="item-add">+{total!.add}</span> <span className="item-del">−{total!.del}</span></>] as [string, ReactNode]] : []),
       ...(spent ? [spent] : []),
       ...(took ? [["took", took] as [string, ReactNode]] : []),
