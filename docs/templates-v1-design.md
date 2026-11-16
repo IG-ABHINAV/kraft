@@ -351,6 +351,20 @@ tasks:
       Never drop the -x line, never skip a commit, never abort. If you cannot
       resolve it, stop and say why: a person takes it from there.
 
+  # Opt-in `on_base_changed.on_conflict` handler: the base moved and Kraft's own
+  # rebase conflicted while the item waited on CI. The note it is sent with
+  # names the branch, both bases, what landed upstream and the rebase to re-run.
+  # No chain of ours names it; a chain that wants it says so.
+  resolve_rebase_conflict:
+    kind: agent
+    harness: claude
+    profile: strong
+    prompt: >-
+      Re-run the rebase the note names and resolve each conflict so both this
+      branch's work and what landed upstream survive. Finish the rebase and
+      leave the branch on the new base. If you cannot resolve it, report
+      status: failed and say why: a person takes it from there.
+
   strict_judge:
     kind: agent
     harness: claude
@@ -476,6 +490,7 @@ nodes:
           - id: test_changed_scopes
             extends: verify_changed_scopes
       - id: review
+        read_only: true
         tasks:
           - id: code_review
             extends: code_review
@@ -576,6 +591,10 @@ nodes:
     message: Review and approve the specification.
     artifact: spec
     reject_to: spec
+    auto_review_mode: checks_first
+    auto_review:
+      id: auto_review
+      extends: gate_reviewer
 
   - id: plan
     kind: exec
@@ -588,6 +607,10 @@ nodes:
     message: Review and approve the implementation plan.
     artifact: plan
     reject_to: plan
+    auto_review_mode: checks_first
+    auto_review:
+      id: auto_review
+      extends: gate_reviewer
 
   # The chain was chosen at intake, before the spec and plan
   # existed. Now both are approved, one agent reads them against the nodes
@@ -604,6 +627,10 @@ nodes:
     message: Review the proposed change to the rest of this chain.
     artifact: chain_revision
     reject_to: chain_revision
+    auto_review_mode: checks_first
+    auto_review:
+      id: auto_review
+      extends: gate_reviewer
 
   - id: implementation
     extends: implementation
@@ -622,6 +649,10 @@ nodes:
     message: Approve creating a draft merge request.
     artifact: work_brief
     reject_to: implementation
+    auto_review_mode: checks_first
+    auto_review:
+      id: auto_review
+      extends: gate_reviewer
 
   # Its own node, not a task before `open`: a node wholly produces one kind or
   # declares none, and `open` produces nothing.
@@ -663,6 +694,10 @@ nodes:
     message: Review the complete work item and merge-request summary.
     artifact: review_brief
     reject_to: implementation
+    auto_review_mode: checks_first
+    auto_review:
+      id: auto_review
+      extends: gate_reviewer
 
   - id: mark_ready
     kind: exec

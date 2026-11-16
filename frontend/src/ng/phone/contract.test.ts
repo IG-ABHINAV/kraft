@@ -38,7 +38,7 @@ const ALLOWED = [
   "item/cause", // failedFix, the forge login words and the work-kept line: a failed card says one thing on both layouts (R15b-01)
   "item/TestsLine", // the gate's last test run, one line, as the desktop's gate pane reads it (R15b-01)
   "item/reviewOutcome", // the agent reviewer's latest outcome at a gate and its words: one lookup for both layouts
-  "item/events", // gateSkipped: a skipped gate reads as skipped on both layouts (R14b-05)
+  "item/gateRounds", // a gate's rounds, who decided in words, and where it stands: one reader for both layouts
   "item/draft/applied", // appliedRows: what an applied draft set, as the desktop's Config lists it (R14b-04)
   "item/draft/useApplied", // the applied drafts, folded from the whole event log
   "item/draft/view", // lines(): the draft's changes as the desktop's Start dialog lists them (R10b-12)
@@ -55,6 +55,7 @@ const ALLOWED = [
   "review/finish",
   "review/patch",
   "review/range", // rangeName and threadRange: a thread's lines named as the desktop names them
+  "review/RoundSummary", // a gate round in a few lines (how it ended, its review, its thread count): one definition for the desktop's round view and the phone's
   "review/FinishReview", // useSubmit only: the one review submit the desktop sends
   "review/model",
   "templates/draft/useConfigDraft",
