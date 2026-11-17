@@ -1,11 +1,13 @@
 <!-- Make it yours, block 01: the Chains screen editing `with-lint` beside the
-     YAML file it writes, in three edits and a review. The frames and the view
+     YAML file it writes, in two edits, then default changing underneath it,
+     then a review. The frames and the view
      computation are app/utils/customizePlayer.ts; this is only its view. The
      app replica is drawn for the eye (aria-hidden) in the app's dark look on
      the violet frame; a screen reader gets the file and the caption, which is
      live only while the demo is paused. From 1100px the crop and the file sit
      side by side; under it a phone layout draws the chain's track above the
-     file. Both read one player. Hover or focus inside holds the run. -->
+     file. Both read one player. A hovering mouse holds the run, and so does
+     keyboard focus inside it, except on its own buttons. -->
 <script setup lang="ts">
 import { CAPS, PHONE_CAPS, STEPS, desktopView, phoneFrame, phoneView, stepOf } from '~/utils/customizePlayer'
 import type { YamlLine } from '~/utils/customizePlayer'
@@ -23,7 +25,7 @@ const p = computed(() => phoneView(pf.value))
 
 // A line not yet written keeps its place in the page, hidden.
 const lineStyle = (l: YamlLine) => ({
-  maxHeight: `${l.shown ? 64 : 0}px`,
+  gridTemplateRows: l.shown ? '1fr' : '0fr',
   opacity: l.shown ? 1 : 0,
   visibility: l.shown ? 'visible' : 'hidden',
   paddingBlock: l.shown ? '1.5px' : '0',
@@ -52,9 +54,13 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
         >
           <div
             class="s-cdemo-dots s-cdemo-canvas"
+            :class="{ 'is-reset': d.reset }"
             :style="d.cv.style"
           >
-            <template v-if="d.cv.chain">
+            <div
+              class="s-cdemo-view"
+              :class="{ 'is-off': !d.cv.chain }"
+            >
               <div class="s-cdemo-fade">
                 <div
                   v-for="(e, i) in d.edges"
@@ -78,6 +84,7 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
                 <span
                   v-if="n.isGate"
                   class="s-cdemo-gate"
+                  :class="{ 'is-sel': n.sel }"
                 />
                 <div
                   v-else
@@ -99,89 +106,84 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
                 class="s-cdemo-plus"
                 :style="d.plusStyle"
               >+</div>
-            </template>
+            </div>
 
-            <template v-else>
+            <div
+              class="s-cdemo-view"
+              :class="{ 'is-off': d.cv.chain }"
+            >
               <p
                 v-if="d.cv.banner"
                 class="s-cdemo-banner"
               >Inherited from default: change it in YAML, or detach the chain.</p>
-              <template v-if="d.nv.track">
-                <div
-                  class="s-cdemo-edge"
-                  :style="d.nv.e1"
-                />
-                <div
-                  class="s-cdemo-edge"
-                  :style="d.nv.e2"
-                />
-                <svg
-                  class="s-cdemo-mark"
-                  :style="d.nv.start"
-                  viewBox="0 0 16 16"
-                ><circle
-                  cx="8"
-                  cy="8"
-                  r="7"
-                  fill="none"
-                  stroke="#c6c7cc"
-                  stroke-width="1.3"
-                /><path
-                  d="M6.3 5v6l4.7-3z"
-                  fill="#c6c7cc"
-                /></svg>
-                <svg
-                  class="s-cdemo-mark"
-                  :style="d.nv.end"
-                  viewBox="0 0 16 16"
-                ><rect
-                  x="1.5"
-                  y="1.5"
-                  width="13"
-                  height="13"
-                  rx="3.5"
-                  fill="#20202b"
-                  stroke="#777784"
-                  stroke-width="1.3"
-                /></svg>
-              </template>
+              <div
+                class="s-cdemo-edge"
+                :style="d.nv.e1"
+              />
+              <div
+                class="s-cdemo-edge"
+                :style="d.nv.e2"
+              />
+              <svg
+                class="s-cdemo-mark"
+                :style="d.nv.start"
+                viewBox="0 0 16 16"
+              ><circle
+                cx="8"
+                cy="8"
+                r="7"
+                fill="none"
+                stroke="#c6c7cc"
+                stroke-width="1.3"
+              /><path
+                d="M6.3 5v6l4.7-3z"
+                fill="#c6c7cc"
+              /></svg>
+              <svg
+                class="s-cdemo-mark"
+                :style="d.nv.end"
+                viewBox="0 0 16 16"
+              ><rect
+                x="1.5"
+                y="1.5"
+                width="13"
+                height="13"
+                rx="3.5"
+                fill="#20202b"
+                stroke="#777784"
+                stroke-width="1.3"
+              /></svg>
               <div
                 v-if="d.nv.hasTask"
                 class="s-cdemo-gnode"
                 :style="d.nv.task"
               >
-                <span
-                  v-if="d.nv.hasStep"
-                  class="s-cdemo-glabel s-cdemo-step-label"
-                >{{ d.nv.step }}</span>
                 <div
                   class="s-cdemo-gbox"
                   :class="{ 'is-sel': d.nv.sel }"
                 >
-                  <CustomizeGlyph :name="d.nv.agent ? 'agent' : 'term'" />
+                  <CustomizeGlyph name="agent" />
                 </div>
                 <span
                   class="s-cdemo-glabel"
                   :class="{ 'is-bold': d.nv.sel }"
-                >{{ d.nv.taskId }}</span>
+                >implement</span>
               </div>
               <div
                 v-if="d.nv.addTask"
                 class="s-cdemo-plus"
                 :style="d.nv.plus"
               >+</div>
-              <p
-                v-if="d.nv.empty"
-                :style="d.nv.emptyStyle"
-              >This node is empty, <span class="s-cdemo-under">add your first step</span>, or <span class="s-cdemo-under">extend a node from the library</span>.</p>
               <div class="s-cdemo-back">
                 <span class="s-cdemo-btn">← chain</span>
                 <span class="s-cdemo-m s-cdemo-nodename">{{ d.cv.nodeName }}</span>
               </div>
-            </template>
+            </div>
 
+            <Transition name="s-cdemo-pop">
             <div
               v-if="d.menu.show"
+              :key="d.menu.head || d.menu.items[0]?.title"
               class="s-cdemo-menu"
               :style="d.menu.style"
             >
@@ -189,14 +191,6 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
                 v-if="d.menu.head"
                 class="s-cdemo-mhead"
               >{{ d.menu.head }}</div>
-              <div
-                v-if="d.menu.idRow"
-                class="s-cdemo-idrow"
-              >
-                <span class="s-cdemo-sub">Node id</span>
-                <span class="s-cdemo-search s-cdemo-m">lint</span>
-                <span class="s-cdemo-create"><span class="s-cdemo-btn s-cdemo-pri">Create &amp; open →</span></span>
-              </div>
               <div
                 v-if="d.menu.search"
                 class="s-cdemo-search s-cdemo-m"
@@ -214,9 +208,12 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
                 <span class="s-cdemo-mtext"><span :class="{ 's-cdemo-m': it.titleCls }">{{ it.title }}</span><span class="s-cdemo-msub">{{ it.sub }}</span></span>
               </div>
             </div>
+            </Transition>
 
+            <Transition name="s-cdemo-pop">
             <div
               v-if="d.card.show"
+              :key="d.card.title"
               class="s-cdemo-card"
               :style="d.card.style"
             >
@@ -251,6 +248,13 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
                     />{{ r.chipText }}</span>
                   </div>
                   <div
+                    v-else-if="r.isText"
+                    class="s-cdemo-trow"
+                  >
+                    <span class="s-cdemo-tlabel">{{ r.k }}</span>
+                    <span class="s-cdemo-tbox">{{ r.v }}</span>
+                  </div>
+                  <div
                     v-else
                     class="s-cdemo-change"
                   >
@@ -270,6 +274,7 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
                 <span class="s-cdemo-btn s-cdemo-pri">Publish</span>
               </div>
             </div>
+            </Transition>
           </div>
 
           <div
@@ -277,82 +282,45 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
             class="s-cdemo-bp"
           >
             <div class="s-cdemo-tabs">
-              <span
-                class="s-cdemo-tab"
-                :class="{ 'is-on': !d.bp.loopOn }"
-              ><CustomizeGlyph
+              <span class="s-cdemo-tab is-on"><CustomizeGlyph
                 name="bolt"
                 class="s-cdemo-ic s-cdemo-tabic"
               />On failure</span>
-              <template v-if="d.bp.loopTabs">
-                <span
-                  class="s-cdemo-tab"
-                  :class="{ 'is-on': d.bp.loopOn }"
-                ><CustomizeGlyph
+              <template v-if="d.bp.nodeTabs">
+                <span class="s-cdemo-tab"><CustomizeGlyph
                   name="loop"
                   class="s-cdemo-ic s-cdemo-tabic"
                 />Fix loop</span>
                 <span class="s-cdemo-tab">Escalation</span>
               </template>
             </div>
-            <template v-if="d.bp.empty">
-              <div class="s-cdemo-nofix">No fix loop. <span class="s-cdemo-green">Add a fix loop</span> that repairs and re-measures this node.</div>
-              <p class="s-cdemo-nofixnote">Without one, a failed measurement stops the node for you.</p>
-            </template>
-            <div
-              v-if="d.bp.loop"
-              class="s-cdemo-loop"
-            >
-              <div class="s-cdemo-edge s-cdemo-loop-e1" />
-              <div class="s-cdemo-edge s-cdemo-loop-e2" />
-              <svg
-                class="s-cdemo-mark s-cdemo-loop-start"
-                viewBox="0 0 16 16"
-              ><circle
-                cx="8"
-                cy="8"
-                r="7"
-                fill="none"
-                stroke="#c6c7cc"
-                stroke-width="1.3"
-              /><path
-                d="M6.3 5v6l4.7-3z"
-                fill="#c6c7cc"
-              /></svg>
-              <div class="s-cdemo-gnode s-cdemo-loop-task">
-                <div class="s-cdemo-gbox"><CustomizeGlyph name="agent" /></div>
-                <span class="s-cdemo-glabel">repair_lint</span>
-              </div>
-              <svg
-                class="s-cdemo-mark s-cdemo-loop-end"
-                viewBox="0 0 16 16"
-              ><rect
-                x="1.5"
-                y="1.5"
-                width="13"
-                height="13"
-                rx="3.5"
-                fill="#20202b"
-                stroke="#777784"
-                stroke-width="1.3"
-              /></svg>
-            </div>
           </div>
         </div>
 
         <div class="s-cdemo-file">
           <p class="s-cdemo-filehead">
-            <span>chains/with-lint.yaml</span>
+            <Transition
+              name="s-cdemo-swap"
+              mode="out-in"
+            ><span :key="d.path">{{ d.path }}</span></Transition>
             <span
               class="s-cdemo-note"
               :class="{ 'is-draft': d.changes }"
             >{{ d.note }}</span>
           </p>
-          <div class="s-cdemo-lines">
+          <Transition
+            name="s-cdemo-swap"
+            mode="out-in"
+          >
+          <div
+            :key="d.path"
+            class="s-cdemo-lines"
+          >
             <div
               v-for="(l, i) in d.lines"
               :key="i"
               class="s-cdemo-yl"
+              :class="{ 'is-hidden': !l.shown }"
               :style="lineStyle(l)"
             >
               <span
@@ -361,6 +329,7 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
               ><span>{{ l.prefix }}</span><span class="s-cdemo-yk">{{ l.key }}</span><span>{{ l.rest }}</span></span>
             </div>
           </div>
+          </Transition>
         </div>
       </div>
 
@@ -417,69 +386,9 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
       </div>
     </div>
 
-    <!-- Phone: the chain's track above the file; no inspector, no menus. -->
+    <!-- Phone: the caption and buttons, then the chain's track above the file; no
+         inspector, no menus. The file grows below the controls, so they never move. -->
     <div class="s-cdemo-narrow">
-      <div class="s-cdemo-frame">
-        <div
-          class="s-cdemo-app s-cdemo-track"
-          aria-hidden="true"
-        >
-          <div class="s-cdemo-trackbar">
-            <span class="s-cdemo-m s-cdemo-trackname">with-lint ⌄</span>
-            <span class="s-cdemo-extends">extends default</span>
-            <span
-              class="s-cdemo-state"
-              :class="{ 'is-draft': p.draft }"
-            >{{ p.state }}</span>
-          </div>
-          <div class="s-cdemo-lane">
-            <div class="s-cdemo-pfade">
-              <div
-                v-for="(e, i) in p.edges"
-                :key="i"
-                class="s-cdemo-edge s-cdemo-pedge"
-                :style="e.style"
-              />
-            </div>
-            <div
-              v-for="n in p.nodes"
-              :key="n.id"
-              class="s-cdemo-gnode s-cdemo-pnode"
-              :style="n.wrap"
-            >
-              <div class="s-cdemo-gbox">
-                <CustomizeGlyph :name="n.agent ? 'agent' : n.layers ? 'layers' : 'term'" />
-              </div>
-              <span
-                class="s-cdemo-glabel"
-                :class="n.below ? 's-cdemo-below' : 's-cdemo-above'"
-              >{{ n.id }}</span>
-              <span
-                class="s-cdemo-gmeta s-cdemo-pmeta"
-                :style="n.metaStyle"
-              >{{ n.meta }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="s-cdemo-file s-cdemo-pfile">
-          <p class="s-cdemo-filehead"><span>chains/with-lint.yaml</span></p>
-          <div class="s-cdemo-lines">
-            <div
-              v-for="(l, i) in p.lines"
-              :key="i"
-              class="s-cdemo-yl"
-              :style="lineStyle(l)"
-            >
-              <span
-                class="s-cdemo-yt"
-                :style="textStyle(l)"
-              ><span>{{ l.prefix }}</span><span class="s-cdemo-yk">{{ l.key }}</span><span>{{ l.rest }}</span></span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <div class="s-cdemo-pbar">
         <div
           class="s-cdemo-caption s-cdemo-pcaption"
@@ -534,10 +443,79 @@ const textStyle = (l: YamlLine) => ({ paddingLeft: `${l.pad}ch` })
           >{{ s.short }}</button>
         </div>
       </div>
+      <div class="s-cdemo-frame">
+        <div
+          class="s-cdemo-app s-cdemo-track"
+          aria-hidden="true"
+        >
+          <div class="s-cdemo-trackbar">
+            <span class="s-cdemo-m s-cdemo-trackname">with-lint ⌄</span>
+            <span class="s-cdemo-extends">extends default</span>
+            <span
+              class="s-cdemo-state"
+              :class="{ 'is-draft': p.draft }"
+            >{{ p.state }}</span>
+          </div>
+          <div class="s-cdemo-lane">
+            <div class="s-cdemo-pfade">
+              <div
+                v-for="(e, i) in p.edges"
+                :key="i"
+                class="s-cdemo-edge s-cdemo-pedge"
+                :style="e.style"
+              />
+            </div>
+            <div
+              v-for="n in p.nodes"
+              :key="n.id"
+              class="s-cdemo-gnode s-cdemo-pnode"
+              :style="n.wrap"
+            >
+              <div class="s-cdemo-gbox">
+                <CustomizeGlyph :name="n.agent ? 'agent' : n.layers ? 'layers' : 'term'" />
+              </div>
+              <span
+                class="s-cdemo-glabel"
+                :class="n.below ? 's-cdemo-below' : 's-cdemo-above'"
+              >{{ n.id }}</span>
+              <span
+                class="s-cdemo-gmeta s-cdemo-pmeta"
+                :style="n.metaStyle"
+              >{{ n.meta }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="s-cdemo-file s-cdemo-pfile">
+          <p class="s-cdemo-filehead"><span>{{ p.path }}</span></p>
+          <div class="s-cdemo-lines s-cdemo-stack">
+            <div
+              v-for="(file, k) in [p.lines, p.defaultLines]"
+              :key="k"
+              class="s-cdemo-layer"
+              :class="{ 'is-off': p.upstream !== (k === 1) }"
+              :aria-hidden="p.upstream !== (k === 1)"
+            >
+              <div
+                v-for="(l, i) in file"
+                :key="i"
+                class="s-cdemo-yl"
+                :class="{ 'is-hidden': !l.shown }"
+                :style="lineStyle(l)"
+              >
+                <span
+                  class="s-cdemo-yt"
+                  :style="textStyle(l)"
+                ><span>{{ l.prefix }}</span><span class="s-cdemo-yk">{{ l.key }}</span><span>{{ l.rest }}</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <figcaption class="s-cdemo-figcap">
-      The Chains screen and the file it writes. The <code>lint</code> and <code>repair_lint</code> tasks are the ones the guide adds to your library.
+      The Chains screen and the file it writes. The <code>lint</code> task is the one the guide adds to your library.
     </figcaption>
   </figure>
 </template>

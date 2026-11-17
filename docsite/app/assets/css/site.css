@@ -2687,6 +2687,63 @@
   font-family: ui-monospace, Menlo, monospace;
 }
 
+/* The demo's motion: one curve, cubic-bezier(0.16, 1, 0.3, 1). A view crossfades in 240ms; what
+   moves on it (a node sliding in, its edges) starts 120ms later, and the
+   file's lines follow at 400ms, so the canvas edit is seen first, then what
+   it writes. On the reset to frame 0 nothing slides back: a reset is not
+   content. */
+.site .s-cdemo-view {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.24s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s;
+}
+
+.site .s-cdemo-view.is-off {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s ease-in, visibility 0s 0.16s;
+}
+
+.site .s-cdemo-canvas.is-reset .s-cdemo-gnode,
+.site .s-cdemo-canvas.is-reset .s-cdemo-edge,
+.site .s-cdemo-canvas.is-reset .s-cdemo-seam,
+.site .s-cdemo-canvas.is-reset .s-cdemo-gmeta {
+  transition: none;
+}
+
+/* A menu or card the step opens: in with a 6px lift, out faster. --d delays
+   one that must follow the file (default changes). */
+.site .s-cdemo-pop-enter-active {
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1) var(--d, 0ms), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1) var(--d, 0ms);
+}
+
+.site .s-cdemo-pop-leave-active {
+  transition: opacity 0.12s ease-in;
+}
+
+.site .s-cdemo-pop-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.site .s-cdemo-pop-leave-to {
+  opacity: 0;
+}
+
+/* The file panel switching between with-lint.yaml and default.yaml. */
+.site .s-cdemo-swap-enter-active {
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.site .s-cdemo-swap-leave-active {
+  transition: opacity 0.12s ease-in;
+}
+
+.site .s-cdemo-swap-enter-from,
+.site .s-cdemo-swap-leave-to {
+  opacity: 0;
+}
+
 .site .s-cdemo-fade {
   position: absolute;
   inset: 0;
@@ -2698,7 +2755,7 @@
   position: absolute;
   width: 44px;
   height: 44px;
-  transition: left 0.7s cubic-bezier(0.3, 0.7, 0.2, 1), opacity 0.5s, transform 0.5s;
+  transition: left 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.12s, opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1) 0.12s, transform 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.12s;
 }
 
 .site .s-cdemo-gbox {
@@ -2712,10 +2769,11 @@
   border-radius: 11px;
   background: var(--a-bg);
   color: var(--a-sub);
-  transition: box-shadow 0.3s;
+  transition: box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.site .s-cdemo-gbox.is-sel {
+.site .s-cdemo-gbox.is-sel,
+.site .s-cdemo-gate.is-sel {
   box-shadow: 0 0 0 2px var(--a-bg), 0 0 0 4px var(--a-text);
 }
 
@@ -2762,12 +2820,6 @@
   color: var(--a-text);
 }
 
-.site .s-cdemo-step-label {
-  top: -22px;
-  font-weight: 400;
-  color: var(--a-muted);
-}
-
 .site .s-cdemo-gmeta {
   position: absolute;
   left: 50%;
@@ -2777,14 +2829,14 @@
   background: var(--a-bg);
   font-size: 11px;
   white-space: nowrap;
-  transition: opacity 0.4s;
+  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1) 0.4s;
 }
 
 .site .s-cdemo-edge {
   position: absolute;
   height: 1px;
   background: var(--a-edge);
-  transition: left 0.7s cubic-bezier(0.3, 0.7, 0.2, 1), width 0.7s cubic-bezier(0.3, 0.7, 0.2, 1);
+  transition: left 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.12s, width 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.12s;
 }
 
 .site .s-cdemo-seam {
@@ -2793,7 +2845,7 @@
   height: 5px;
   border-radius: 3px;
   background: var(--a-stroke);
-  transition: left 0.7s cubic-bezier(0.3, 0.7, 0.2, 1);
+  transition: left 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.12s;
 }
 
 .site .s-cdemo-plus {
@@ -2807,6 +2859,7 @@
   color: var(--a-green);
   font: 500 14px/17px Inter, sans-serif;
   text-align: center;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .site .s-cdemo-mark {
@@ -2843,11 +2896,6 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--a-text);
-}
-
-.site .s-cdemo-under {
-  color: var(--a-text);
-  text-decoration: underline;
 }
 
 .site .s-cdemo-menu {
@@ -2903,27 +2951,6 @@
   border-radius: 7px;
   font-size: 12px;
   color: var(--a-text);
-}
-
-.site .s-cdemo-idrow {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 4px 6px;
-}
-
-.site .s-cdemo-idrow .s-cdemo-search {
-  margin: 0;
-}
-
-.site .s-cdemo-sub {
-  font-size: 12px;
-  color: var(--a-sub);
-}
-
-.site .s-cdemo-create {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .site .s-cdemo-btn {
@@ -2990,6 +3017,29 @@
   color: var(--a-sub);
 }
 
+.site .s-cdemo-trow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 14px 2px;
+}
+
+.site .s-cdemo-tlabel {
+  font-size: 12px;
+  color: var(--a-sub);
+}
+
+/* A gate's message, as the Overview tab's text box shows it. */
+.site .s-cdemo-tbox {
+  padding: 6px 8px;
+  border: 1px solid var(--a-border);
+  border-radius: 6px;
+  background: var(--a-bg);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--a-text);
+}
+
 .site .s-cdemo-rows {
   padding-top: 4px;
   border-top: 1px solid var(--a-line);
@@ -3051,7 +3101,7 @@
   border-top: 1px solid var(--a-line);
 }
 
-/* The panel under a node: On failure and its fix loop */
+/* The panel under a node: its tabs */
 .site .s-cdemo-bp {
   flex: 1 1 auto;
   border-top: 1px solid var(--a-line);
@@ -3085,57 +3135,6 @@
 .site .s-cdemo-app svg.s-cdemo-tabic {
   width: 13px;
   height: 13px;
-}
-
-.site .s-cdemo-nofix {
-  margin: 12px 12px 6px;
-  padding: 9px 12px;
-  border: 1px dashed var(--a-border);
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.site .s-cdemo-green {
-  color: var(--a-green);
-  text-decoration: underline;
-}
-
-.site .s-cdemo-nofixnote {
-  margin: 0 12px;
-  font-size: 11.5px;
-  color: var(--a-muted);
-}
-
-.site .s-cdemo-loop {
-  position: relative;
-  height: 110px;
-}
-
-.site .s-cdemo-loop-e1 {
-  left: 228px;
-  top: 52px;
-  width: 50px;
-}
-
-.site .s-cdemo-loop-e2 {
-  left: 322px;
-  top: 52px;
-  width: 50px;
-}
-
-.site .s-cdemo-loop-start {
-  left: 212px;
-  top: 44px;
-}
-
-.site .s-cdemo-loop-task {
-  left: 278px;
-  top: 30px;
-}
-
-.site .s-cdemo-loop-end {
-  left: 372px;
-  top: 44px;
 }
 
 /* The file */
@@ -3180,14 +3179,22 @@
 }
 
 .site .s-cdemo-yl {
-  display: flex;
+  display: grid;
   padding: 0 16px;
   overflow: hidden;
-  transition: max-height 0.5s, opacity 0.4s, background-color 0.5s;
+  transition: grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1) 0.35s, padding 0.3s cubic-bezier(0.16, 1, 0.3, 1) 0.35s, opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1) 0.4s, background-color 0.4s cubic-bezier(0.16, 1, 0.3, 1) 0.4s;
+}
+
+/* A line the file loses goes at once. */
+.site .s-cdemo-yl.is-hidden {
+  transition-duration: 0.15s;
+  transition-delay: 0s;
 }
 
 /* A wrapped line hangs under its text; the leading spaces are the padding. */
 .site .s-cdemo-yt {
+  min-height: 0;
+  overflow: hidden;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   text-indent: -2ch;
@@ -3415,9 +3422,18 @@
   padding: 0 12px;
 }
 
-/* The finished file's height at 390px, so the page below doesn't move. */
-.site .s-cdemo-pfile {
-  min-height: 608px;
+/* The phone's two files share one spot; the one not shown keeps its height, hidden. */
+.site .s-cdemo-stack {
+  display: grid;
+}
+
+.site .s-cdemo-layer {
+  grid-area: 1 / 1;
+}
+
+.site .s-cdemo-layer.is-off,
+.site .s-cdemo-layer.is-off .s-cdemo-yl {
+  visibility: hidden !important;
 }
 
 .site .s-cdemo-pbar {
@@ -3494,9 +3510,17 @@
   }
 }
 
+/* Reduced motion: nothing slides or grows; what changes still fades, briefly. */
 @media (prefers-reduced-motion: reduce) {
   .site .s-cdemo * {
-    transition: none !important;
+    transition-property: opacity, visibility, background-color !important;
+    transition-duration: 0.15s !important;
+    transition-delay: 0s !important;
+  }
+
+  /* A menu or card only fades: no 6px lift to snap. */
+  .site .s-cdemo-pop-enter-from {
+    transform: none;
   }
 }
 
