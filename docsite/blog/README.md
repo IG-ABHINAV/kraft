@@ -62,6 +62,23 @@ label: "Play the video: Kraft, stop babysitting your coding agents, 1 minute 53 
 ::
 ```
 
+An animation of the item page (`slices`, `gate` or `subagents`) plays only
+while it is on screen and holds a still frame under reduced motion. `still` is
+that frame as an image, which the feed shows in its place. Each one is a
+timeline in `app/utils/blogAnimation/<name>.ts` and a view in
+`app/components/blog/animation/<Name>.vue`; a new one is those two files and
+its line in `BlogAnimation.vue`'s list:
+
+```markdown
+::blog-animation
+---
+name: slices
+still: /blog/my-post/slices.png
+alt: "An illustration of what it shows, step by step"
+---
+::
+```
+
 ## Links
 
 Link a docs page by its path, `[the security page](/project/security-in-depth#agents-and-gates)`.
