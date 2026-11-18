@@ -116,7 +116,7 @@ export function DocViewer({ source, query, onClose, returnTo }: { source: DocSou
   return createPortal(
     <div className="dv-scrim" {...backdropProps(onClose)}>
       <div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className={`dv-drawer${full ? " is-full" : ""}`}>
-        <header className="dv-head">
+        <div className="dv-head">
           <div className="dv-head-top">
             <h2 id={titleId} className="dv-title">{doc?.title ?? "Document"}</h2>
             <button type="button" className="dv-full" onClick={() => setFull(!full)}>{full ? "⤡ exit full screen" : "⤢ full screen"}</button>
@@ -130,7 +130,7 @@ export function DocViewer({ source, query, onClose, returnTo }: { source: DocSou
               <Button onClick={() => copyPath(doc.absolute_path ?? copyablePath(doc))}>Copy path</Button>
             </div>
           )}
-        </header>
+        </div>
         {query && doc && (
           <div className="dv-find" role="group" aria-label="Search matches">
             <Search size={14} aria-hidden />
