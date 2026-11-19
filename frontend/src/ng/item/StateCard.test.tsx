@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -404,6 +404,23 @@ describe("StateCard", () => {
     const card = screen.getByRole("region", { name: title });
     if (reason) expect(card).toHaveTextContent(reason);
     expect(within(card).queryByRole("button", { name: /Retry/ })).toBeNull();
+  });
+
+  it.each([
+    ["wait", "Waiting on CI", "next check"],
+    ["rate_limit", "Waiting on the provider", "next retry"],
+  ])("%s: the %s card's %s counts down with no new data", (kind, title, fact) => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-19T10:00:00Z"));
+      show({ display_status: "waiting", stop: stop(kind, { reason: null, resume_at: "2026-11-19T10:04:30Z" }) });
+      const check = () => within(screen.getByRole("region", { name: title })).getByText(fact).nextElementSibling;
+      expect(check()).toHaveTextContent("in 4m");
+      act(() => vi.advanceTimersByTime(120_000));
+      expect(check()).toHaveTextContent("in 2m");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("slices: a parent says its children are the work, with their count, and offers no Retry", () => {
