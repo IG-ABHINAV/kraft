@@ -19,6 +19,8 @@ from kraft.adapters.forge.models import (
     DropCause,
     FailedJob,
     ForgeError,
+    ForgeNote,
+    ForgeThread,
     HeadMoved,
     Job,
     Label,
@@ -26,6 +28,7 @@ from kraft.adapters.forge.models import (
     MRDetails,
     MRRef,
     Pipeline,
+    Posted,
     QueueRead,
     QueueState,
     ReviewerFeedback,
@@ -46,6 +49,47 @@ _APPROVAL_NOTES = ("approved this merge request", "unapproved this merge request
 #: is never a verdict (Kraft-zn8me). `set_labels` re-creates the MR pipeline
 #: and auto-cancel of redundant pipelines cancels the old one; a pipeline a
 #: person cancelled with no successor is `ci.render_ci`'s "abandoned".
+def _glab_notes(notes: list[dict]) -> tuple[ForgeNote, ...]:
+    """A discussion's notes, a system note ("changed this line") left out."""
+    return tuple(
+        ForgeNote(
+            id=str(n.get("id") or ""),
+            rest_id=str(n.get("id") or ""),
+            author=str((n.get("author") or {}).get("username") or ""),
+            author_type=None,
+            body=n.get("body") or "",
+            created_at=n.get("created_at") or "",
+            updated_at=n.get("updated_at") or "",
+        )
+        for n in notes
+        if not n.get("system")
+    )
+
+
+def _glab_thread(d: dict, iid: int, locked: bool) -> ForgeThread:
+    raw = d.get("notes") or []
+    first = raw[0] if raw else {}
+    where = first.get("position") or {}
+    resolvable = [n for n in raw if n.get("resolvable")]
+    return ForgeThread(
+        id=str(d["id"]),
+        mr=iid,
+        resolved=bool(resolvable) and all(n.get("resolved") for n in resolvable),
+        outdated=False,  # GitLab's discussions API does not say
+        can_reply=not locked,
+        can_resolve=bool(resolvable),
+        file=where.get("new_path") or where.get("old_path"),
+        line=where.get("new_line") or where.get("old_line"),
+        notes=_glab_notes(raw),
+    )
+
+
+def _posted(answer: dict) -> Posted:
+    return Posted(
+        (str(answer["id"]),), str(answer.get("created_at") or ""), answer.get("body") or ""
+    )
+
+
 def _bot_feedback(reviewer, notes: list[dict], discussions: list[dict], since) -> ReviewerFeedback:
     """One bot's part of the merge request's notes and discussions."""
     bot = reviewer.bot
@@ -103,6 +147,7 @@ def _bot_feedback(reviewer, notes: list[dict], discussions: list[dict], since) -
                             ),
                         ]
                     ),
+                    "notes": _glab_notes(thread),
                 }
             )
     return ReviewerFeedback(reviewer, mr_ops.newest(seen), tuple(summaries), tuple(threads))
@@ -257,6 +302,76 @@ class GlabCli(mr_ops.CliWaits):
         if not users or len(users) != 1:  # glab errors on anything but exactly one
             raise ForgeError(f"GitLab has {len(users or [])} users named {username!r}, not 1")
         return str(users[0]["id"])
+
+    async def viewer(self, *, repo: Path) -> str:
+        user = await self._api(repo, "user")
+        login = user.get("username") if isinstance(user, dict) else None
+        if not login:
+            raise ForgeError(f"GET user: answered without a username: {user!r:.200}")
+        return str(login)
+
+    async def read_thread(self, *, repo: Path, branch: str, thread_id: str) -> ForgeThread | None:
+        mr = await self._mr(repo, branch)
+        try:
+            found = await self._api(
+                repo, f"projects/:id/merge_requests/{mr['iid']}/discussions/{thread_id}"
+            )
+        except ForgeError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(found, dict) or not found.get("id"):
+            return None
+        return _glab_thread(found, int(mr["iid"]), bool(mr.get("discussion_locked")))
+
+    async def reply_to_thread(self, *, repo: Path, thread: ForgeThread, body: str) -> Posted:
+        answer = await self._api(
+            repo,
+            f"projects/:id/merge_requests/{thread.mr}/discussions/{thread.id}/notes",
+            method="POST",
+            fields={"body": body},
+        )
+        return _posted(answer)
+
+    async def resolve_thread(self, *, repo: Path, thread: ForgeThread) -> None:
+        await self._api(
+            repo,
+            f"projects/:id/merge_requests/{thread.mr}/discussions/{thread.id}",
+            method="PUT",
+            fields={"resolved": True},
+        )
+
+    async def mr_comments(self, *, repo: Path, branch: str) -> tuple[ForgeNote, ...]:
+        mr = await self._mr(repo, branch)
+        rows = await self._paged(
+            repo,
+            f"projects/:id/merge_requests/{mr['iid']}/notes",
+            pages=mr_ops.BOT_PAGES,
+            strict=True,
+        )
+        # A discussion's notes are `DiscussionNote` or `DiffNote`: not top-level.
+        return _glab_notes([r for r in rows if not r.get("type")])
+
+    async def upsert_comment(
+        self, *, repo: Path, branch: str, note_id: str | None, body: str
+    ) -> Posted:
+        # A plain note, never a discussion: a resolvable one would block a merge that
+        # requires resolved threads.
+        iid = (await self._mr(repo, branch))["iid"]
+        base = f"projects/:id/merge_requests/{iid}/notes"
+        if note_id is None:
+            answer = await self._api(repo, base, method="POST", fields={"body": body})
+        else:
+            answer = await self._api(repo, f"{base}/{note_id}", method="PUT", fields={"body": body})
+        return _posted(answer)
+
+    async def delete_note(
+        self, *, repo: Path, branch: str, note: ForgeNote, in_thread: bool
+    ) -> None:
+        iid = (await self._mr(repo, branch))["iid"]
+        await self._api(
+            repo, f"projects/:id/merge_requests/{iid}/notes/{note.rest_id}", method="DELETE"
+        )
 
     async def _mr(self, repo: Path, branch: str = "") -> dict:
         """The merge request on `branch`, an open one first (the checkout's when none is
@@ -753,8 +868,11 @@ class GlabCli(mr_ops.CliWaits):
         # keeps approvals across pushes lets an old approval settle a new head.
         mr = await self._mr(repo, branch)
         iid = mr["iid"]
-        discussions = await self._api(
-            repo, f"projects/:id/merge_requests/{iid}/discussions", fields={"per_page": 100}
+        discussions = await self._paged(
+            repo,
+            f"projects/:id/merge_requests/{iid}/discussions",
+            pages=mr_ops.BOT_PAGES,
+            strict=True,
         )
         findings = tuple(
             f"{(n.get('position') or {}).get('new_path')}:"
@@ -834,14 +952,17 @@ class GlabCli(mr_ops.CliWaits):
         mr = await self._mr(repo, branch)
         notes = discussions = []
         if any(r.bot is not None for r in reviewers):
-            # ponytail: one page of 100 of each -- paginate if an MR ever has more.
-            notes = await self._api(
-                repo, f"projects/:id/merge_requests/{mr['iid']}/notes", fields={"per_page": 100}
+            notes = await self._paged(
+                repo,
+                f"projects/:id/merge_requests/{mr['iid']}/notes",
+                pages=mr_ops.BOT_PAGES,
+                strict=True,
             )
-            discussions = await self._api(
+            discussions = await self._paged(
                 repo,
                 f"projects/:id/merge_requests/{mr['iid']}/discussions",
-                fields={"per_page": 100},
+                pages=mr_ops.BOT_PAGES,
+                strict=True,
             )
         out = []
         for r in reviewers:
