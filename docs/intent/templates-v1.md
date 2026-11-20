@@ -422,11 +422,19 @@ origin: src/kraft/templates/models.py §AgentInput -- declared on the task (`inp
 
 An agent task that declares the `bot_feedback` input SHALL be handed what the
 review bots said, as the review wait collected it for this pass of the node,
-and a task that does not declare it SHALL NOT be. WHEN that collection holds no
-summary, no open thread and no failed check, the task SHALL be recorded as done
-with no findings and no agent SHALL be started.
-enforced-by: tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[declared], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[undeclared], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[empty-collection-skips], tests/executor/test_agent_inputs.py::test_a_skipped_triage_is_not_the_previous_review_of_the_next_round, tests/executor/test_agent_inputs.py::test_the_collection_read_is_this_nodes_this_rounds_and_this_runs[this-round], tests/executor/test_agent_inputs.py::test_the_collection_read_is_this_nodes_this_rounds_and_this_runs[stale-round-collection-ignored], tests/executor/test_agent_inputs.py::test_the_collection_read_is_this_nodes_this_rounds_and_this_runs[left-before-a-restart]
+and a task that does not declare it SHALL NOT be.
+enforced-by: tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[declared], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[undeclared], tests/executor/test_agent_inputs.py::test_the_collection_read_is_this_nodes_this_rounds_and_this_runs[this-round], tests/executor/test_agent_inputs.py::test_the_collection_read_is_this_nodes_this_rounds_and_this_runs[stale-round-collection-ignored], tests/executor/test_agent_inputs.py::test_the_collection_read_is_this_nodes_this_rounds_and_this_runs[left-before-a-restart]
 origin: src/kraft/templates/models.py §AgentInput -- declared as `inputs: [bot_feedback]` and delivered by `executor/dispatch.py` §dispatch_node through `prompts.bot_feedback` and `adapters/agent.py`'s `$KRAFT_BOT_FEEDBACK`; the collection is written by the node's `mr.automated_review` wait (`adapters/forge/run.py` §_collect_review).
+
+## REQ bot-feedback-with-nothing-to-judge-starts-no-agent
+
+WHEN the review wait's collection for this pass of the node holds no unresolved
+bot thread, no review check that did not pass (an unfinished one included) and
+no bot summary or review with a non-blank body (an approval's included), the
+system SHALL record a task that declares `bot_feedback` as done with no findings
+and SHALL NOT start an agent for it.
+enforced-by: tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[empty-collection-skips], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[bodyless-approval-skips], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[blank-body-approval-skips], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[approval-with-a-body-runs], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[failed-check-runs], tests/executor/test_agent_inputs.py::test_bot_feedback_is_delivered_only_when_declared[unfinished-check-runs], tests/executor/test_agent_inputs.py::test_a_skipped_triage_is_not_the_previous_review_of_the_next_round
+origin: src/kraft/executor/round_prompts.py §bot_feedback_source -- triage only when the bots said something that could need a change; GitHub keeps an approval's body (adapters/forge/gh.py §_bot_feedback), GitLab's approval writes no summary.
 
 ## REQ triage-verdict-is-delivered-to-the-review-brief
 
@@ -2261,13 +2269,22 @@ origin: config/library.yaml §await_automated_review
 
 ## REQ default-post-draft-flow-is-ordered
 
-The default chain SHALL create a draft merge request, await CI, run any
-declared automated-review task, decide with a triage step which of the review
-bots' feedback needs a change, address CI failures and the feedback that does,
-produce a work-item summary and review, and then request final-gate approval.
-After approval, it SHALL mark the merge request ready, await external approval,
-and merge.
+The default chain SHALL create a draft merge request, run any declared
+automated-review task, decide with a triage step which of the review bots'
+feedback needs a change, then await CI, address CI failures and the feedback
+that does, produce a work-item summary and review, and then request final-gate
+approval. After approval, it SHALL mark the merge request ready, await external
+approval, and merge.
 enforced-by: tests/api/test_default_chain_walk.py::test_approving_every_gate_through_the_api_walks_the_default_chain_to_post_merge_ci, tests/templates/test_publication_chain_order.py::test_the_seeded_default_chain_publishes_in_the_required_order
+
+## REQ default-review-wait-settings-stay-on-its-node
+
+The default chain's review wait SHALL watch CI with a 10-minute cap, and its fix
+loop SHALL be allowed to start early, both set on the library node
+`post_draft_feedback`, while the library task `await_automated_review` SHALL
+keep `watch_ci` off and its 30-minute cap.
+enforced-by: tests/templates/test_library.py::test_the_default_review_wait_settings_stay_on_its_node
+origin: config/library.yaml §post_draft_feedback
 
 ## REQ post-draft-feedback-uses-node-recovery-controls
 
