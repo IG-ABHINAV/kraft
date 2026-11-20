@@ -2053,25 +2053,111 @@ An automated-review task SHALL report ordinary pending, clean, actionable, or
 error results. Actionable feedback SHALL enter
 the declaring execution node's recovery or fix-loop controls; on the collect
 path the wait reports pending, settled, or error instead, and actionable
-feedback comes from the reading task.
-enforced-by: tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[thread-fails], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_settles_each_repository_s_bot_on_its_own_memory[each-settles], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[pending], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[clean], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[actionable], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[error], tests/test_waits.py::test_actionable_automated_review_is_repaired_resynced_and_remeasured[on_failure], tests/test_waits.py::test_actionable_automated_review_is_repaired_resynced_and_remeasured[fix_loop], tests/adapters/forge/test_automated_review.py::test_a_bot_s_unresolved_feedback_is_actionable[gh], tests/adapters/forge/test_automated_review.py::test_a_bot_s_unresolved_feedback_is_actionable[glab], tests/adapters/forge/test_automated_review.py::test_a_review_check_still_running_is_pending[gh], tests/adapters/forge/test_automated_review.py::test_a_review_check_still_running_is_pending[glab], tests/test_waits.py::test_a_reviewer_error_stops_for_a_human_and_spends_no_repair, tests/adapters/forge/test_automated_review.py::test_a_withdrawn_bot_review_does_not_count[gh-dismissed-only], tests/adapters/forge/test_automated_review.py::test_a_withdrawn_bot_review_does_not_count[gh-dismissed-over-an-earlier-review], tests/adapters/forge/test_automated_review.py::test_a_withdrawn_bot_review_does_not_count[glab-resolved-only]
+feedback comes from the reading task. A wait that sets `watch_ci` SHALL also end
+failed on a settled red pipeline.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_a_red_pipeline_the_review_wait_reads_is_the_ci_wait_s_finding, tests/adapters/forge/test_run_watch_ci.py::test_a_red_pipeline_the_review_wait_reads_goes_to_on_failure_first, tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[thread-fails], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_settles_each_repository_s_bot_on_its_own_memory[each-settles], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[pending], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[clean], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[actionable], tests/adapters/forge/test_waits.py::test_automated_review_reports_ordinary_task_results[error], tests/test_waits.py::test_actionable_automated_review_is_repaired_resynced_and_remeasured[on_failure], tests/test_waits.py::test_actionable_automated_review_is_repaired_resynced_and_remeasured[fix_loop], tests/adapters/forge/test_automated_review.py::test_a_bot_s_unresolved_feedback_is_actionable[gh], tests/adapters/forge/test_automated_review.py::test_a_bot_s_unresolved_feedback_is_actionable[glab], tests/adapters/forge/test_automated_review.py::test_a_review_check_still_running_is_pending[gh], tests/adapters/forge/test_automated_review.py::test_a_review_check_still_running_is_pending[glab], tests/test_waits.py::test_a_reviewer_error_stops_for_a_human_and_spends_no_repair, tests/adapters/forge/test_automated_review.py::test_a_withdrawn_bot_review_does_not_count[gh-dismissed-only], tests/adapters/forge/test_automated_review.py::test_a_withdrawn_bot_review_does_not_count[gh-dismissed-over-an-earlier-review], tests/adapters/forge/test_automated_review.py::test_a_withdrawn_bot_review_does_not_count[glab-resolved-only]
 
 ## REQ automated-review-implementation-is-not-template-configuration
 
 Templates MAY name which reviewers an automated-review task waits for, a bot
-login or a check name in its `reviewers`, and the wait's grace period.
+login or a check name in its `reviewers`, the wait's grace period, and whether it
+also watches the merge request's CI (`watch_ci`), which names what it looks at,
+not how it is read.
 Templates SHALL NOT expose how a review is read, such as webhook event names,
 commands, comment authors, free check-name keys, or API and CLI mechanics. The
 selected task implementation SHALL own those details.
-enforced-by: tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[webhook_event], tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[check_name], tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[comment_author], tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[command], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo-list], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[task], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo-over-task], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo-says-none], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[item-over-repo-and-task], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[none-anywhere], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[the-review], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[another-wait], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[malformed-entry], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[grace-period-on-the-review], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[grace-period-on-another-wait], tests/adapters/forge/test_automated_review.py::test_a_reviewer_is_named_exactly_one_way_or_refused_at_load[both], tests/adapters/forge/test_automated_review.py::test_a_reviewer_is_named_exactly_one_way_or_refused_at_load[neither], tests/adapters/forge/test_automated_review.py::test_a_bot_review_is_pending_until_the_bot_reviews_the_head_then_clean[gh], tests/adapters/forge/test_automated_review.py::test_a_bot_review_is_pending_until_the_bot_reviews_the_head_then_clean[glab], tests/adapters/forge/test_automated_review.py::test_a_failed_review_check_is_actionable_with_its_output[gh], tests/adapters/forge/test_automated_review.py::test_a_failed_review_check_is_actionable_with_its_output[glab]
+enforced-by: tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[webhook_event], tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[check_name], tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[comment_author], tests/test_waits.py::test_a_template_cannot_configure_how_automated_review_is_read[command], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo-list], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[task], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo-over-task], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[repo-says-none], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[item-over-repo-and-task], tests/adapters/forge/test_run_review.py::test_the_nearest_layer_s_reviewers_reach_the_review_task[none-anywhere], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[the-review], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[another-wait], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[malformed-entry], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[grace-period-on-the-review], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[grace-period-on-another-wait], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[watch-ci-on-another-wait], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[watch-ci-with-no-ci-wait-after-it], tests/adapters/forge/test_automated_review.py::test_a_reviewer_is_named_exactly_one_way_or_refused_at_load[both], tests/adapters/forge/test_automated_review.py::test_a_reviewer_is_named_exactly_one_way_or_refused_at_load[neither], tests/adapters/forge/test_automated_review.py::test_a_bot_review_is_pending_until_the_bot_reviews_the_head_then_clean[gh], tests/adapters/forge/test_automated_review.py::test_a_bot_review_is_pending_until_the_bot_reviews_the_head_then_clean[glab], tests/adapters/forge/test_automated_review.py::test_a_failed_review_check_is_actionable_with_its_output[gh], tests/adapters/forge/test_automated_review.py::test_a_failed_review_check_is_actionable_with_its_output[glab]
+
+## REQ watch-ci-is-only-on-a-review-wait-ahead-of-its-ci-wait
+
+IF a task sets `watch_ci` and it is not an `mr.automated_review` task in one of
+its node's own steps with an `mr.ci` task in a later one of those steps, THEN
+the system SHALL refuse the chain at load.
+enforced-by: tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[watch-ci-on-another-wait], tests/adapters/forge/test_run_review.py::test_only_the_review_task_names_reviewers[watch-ci-with-no-ci-wait-after-it], tests/adapters/forge/test_run_review.py::test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node[a-later-step], tests/adapters/forge/test_run_review.py::test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node[the-same-step], tests/adapters/forge/test_run_review.py::test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node[an-earlier-step], tests/adapters/forge/test_run_review.py::test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node[only-in-on-failure], tests/adapters/forge/test_run_review.py::test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node[only-in-the-fix-loop], tests/adapters/forge/test_run_review.py::test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node[watching-from-the-fix-loop], tests/adapters/forge/test_run_review.py::test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node[in-a-later-node]
+origin: src/kraft/templates/models.py §Chain._watch_ci_looks_ahead_to_its_ci_wait
+
+## REQ review-wait-red-pipeline-is-the-ci-wait-s-finding
+
+WHEN an `mr.automated_review` task that sets `watch_ci` reads a settled red
+pipeline that the CI wait would not first retry as an infrastructure failure,
+the system SHALL end the wait failed and report each failed job as a finding of
+the node's own `mr.ci` task, with that task's path as its source, so that it
+has the fingerprint, the CI-log marking and the recovery of the same red read by
+the CI wait.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_a_red_pipeline_the_review_wait_reads_is_the_ci_wait_s_finding, tests/adapters/forge/test_run_watch_ci.py::test_a_red_pipeline_the_review_wait_reads_goes_to_on_failure_first
+origin: src/kraft/adapters/forge/run.py §_watch_ci
+
+## REQ review-wait-watching-ci-pushes-first
+
+WHEN an `mr.automated_review` task that sets `watch_ci` makes an observation,
+the system SHALL first push the item's branch and record the push, and SHALL end
+the wait settled, reading neither CI nor the bots, when the merge request is
+already merged.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[pending], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[merged], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[push-refused], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[watch-ci-off]
+origin: src/kraft/adapters/forge/run.py §_watch_ci
+
+## REQ review-wait-watching-ci-reads-ci-without-acting-on-it
+
+WHILE an `mr.automated_review` task that sets `watch_ci` reads the merge
+request's pipeline, the system SHALL NOT rebase the branch, retry a job, count
+an infrastructure retry, pin a pipeline or record that CI is not configured,
+SHALL NOT read it when the repository's `ci_checks` is off, and SHALL leave every
+read but a settled red or a confirmed conflict, a read that fails for any reason
+but a rate limit included, to the node's CI wait.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[pending], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[green], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[no-pipeline-yet], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[red-for-an-older-head], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[infra-red], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[abandoned], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[read-error], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[ci-checks-off], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[rate-limited], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[watch-ci-off]
+origin: src/kraft/adapters/forge/run.py §_watch_ci
+
+## REQ review-wait-watching-ci-ends-on-a-confirmed-conflict
+
+WHEN an `mr.automated_review` task that sets `watch_ci` reads a merge request
+confirmed to conflict with its base, the system SHALL end the wait settled, not
+failed, without reading the bots or writing what they said.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_acts_only_on_a_settled_red_or_a_conflict[conflict], tests/adapters/forge/test_run_watch_ci.py::test_a_wait_cut_short_by_ci_records_no_heard_or_silent_bots[conflict]
+origin: src/kraft/adapters/forge/run.py §_watch_ci
+
+## REQ review-wait-cut-short-by-ci-records-no-heard-or-silent-bots
+
+WHEN an `mr.automated_review` task that sets `watch_ci` ends on a red pipeline
+or a confirmed conflict, the system SHALL NOT record which bots were heard or
+silent on that head.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_a_wait_cut_short_by_ci_records_no_heard_or_silent_bots[red], tests/adapters/forge/test_run_watch_ci.py::test_a_wait_cut_short_by_ci_records_no_heard_or_silent_bots[conflict], tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[a-member-red], tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[a-member-conflict]
+origin: src/kraft/adapters/forge/run.py §_watch_ci
+
+## REQ multi-repo-review-wait-watches-every-repository-first
+
+WHERE an item has several repositories and its `mr.automated_review` task sets
+`watch_ci`, the system SHALL push every repository's branch and read every
+repository's pipeline, skipping only those whose merge request merged, before it
+reads any bot, and SHALL report a red pipeline there without findings, as the CI
+wait does.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[a-member-red], tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[the-root-red-behind-a-pending-member], tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[a-member-conflict], tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[every-pipeline-pending], tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[a-merged-member-is-skipped], tests/adapters/forge/test_run_watch_ci.py::test_a_multi_repo_watching_wait_reads_every_repository_before_its_bots[a-pointer-only-root-is-not-read]
+origin: src/kraft/adapters/forge/run.py §_watch_ci
+
+## REQ review-wait-watching-ci-counts-its-limit-from-the-push
+
+WHERE an `mr.automated_review` task sets `watch_ci`, the system SHALL count the
+wait's timeout from when Kraft pushed the head the wait is about, or from that
+head's commit time when Kraft has no record of pushing it, and not from the
+wait's start.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_s_limit_counts_from_the_push[from-the-push], tests/adapters/forge/test_run_watch_ci.py::test_the_watching_wait_s_limit_counts_from_the_push[from-the-wait-start]
+origin: src/kraft/adapters/forge/run.py §_settle_review -- the person, 2026-11-20: "if it didn't post a review after the push in 10 mins, it's done."
+
+## REQ a-stop-on-red-ci-the-review-wait-saw-names-the-ci-wait
+
+WHEN a red pipeline that an `mr.automated_review` task watching CI read stops
+its node for a person, the system SHALL name the node's `mr.ci` task and the
+pipeline's failed jobs in the stop's reason, and not the review wait.
+enforced-by: tests/executor/test_walk_forge_cause.py::test_a_stop_on_red_ci_the_review_wait_saw_names_the_ci_wait[no-fix-loop], tests/executor/test_walk_forge_cause.py::test_a_stop_on_red_ci_the_review_wait_saw_names_the_ci_wait[blind-in-a-fix-loop-node]
+origin: src/kraft/executor/walk.py §_named_for_stop
 
 ## REQ automated-review-collects-when-a-later-task-reads-it
 
 WHERE a later task of an automated-review task's node declares the
 `bot_feedback` input, the system SHALL hold the wait until every named reviewer
 has finished with the latest pushed head, then write what the reviewers said for
-that task and report the wait settled, whatever they said.
-enforced-by: tests/adapters/forge/test_run_review.py::test_the_collect_path_settles_then_hands_on_the_collection[both-settle], tests/adapters/forge/test_run_review.py::test_the_next_check_comes_when_a_bots_grace_period_ends_not_at_the_backoff, tests/adapters/forge/test_run_review.py::test_no_reviewer_named_settles_with_an_empty_collection
+that task and report the wait settled, whatever they said, unless the wait sets
+`watch_ci` and a red pipeline or a confirmed conflict ends it first.
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_a_wait_cut_short_by_ci_records_no_heard_or_silent_bots[red], tests/adapters/forge/test_run_watch_ci.py::test_a_wait_cut_short_by_ci_records_no_heard_or_silent_bots[conflict], tests/adapters/forge/test_run_review.py::test_the_collect_path_settles_then_hands_on_the_collection[both-settle], tests/adapters/forge/test_run_review.py::test_the_next_check_comes_when_a_bots_grace_period_ends_not_at_the_backoff, tests/adapters/forge/test_run_review.py::test_no_reviewer_named_settles_with_an_empty_collection
 origin: config/library.yaml §await_automated_review
 
 ## REQ automated-review-settles-a-bot-nothing-reads
@@ -2082,14 +2168,15 @@ hold the wait for a bot reviewer until every named reviewer has finished with
 the latest pushed head, as on the collect path, each repository against its
 own head and with its own memory of the reviewers between checks. It SHALL then report actionable each bot's
 unresolved threads, a newest review that requests changes when the bot left no
-thread, and a check that finished without passing, and clean otherwise. A bot's
+thread, and a check that finished without passing, and clean otherwise, unless the wait sets
+`watch_ci` and a red pipeline ends it first. A bot's
 approval SHALL count as its activity. The wait's timeout SHALL settle it the
 same way, and SHALL NOT stop the item for human action, unless a named check is
 still unfinished then: that SHALL stop for human action, as a check alone does.
 On a multi-repo item, the findings SHALL reach the node's recovery as a
 single-repo item's do, each naming its path from the item's own checkout,
 or the member it was read on when it has no path.
-enforced-by: tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_s_bot_findings_reach_the_fix_loop_named_from_its_checkout[a-member-s-thread], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_s_bot_findings_reach_the_fix_loop_named_from_its_checkout[the-root-s-thread], tests/adapters/forge/test_run_review.py::test_kraft_s_own_verdict_names_each_finding_once[a-member-s-pathless-finding], tests/adapters/forge/test_run_review.py::test_a_member_s_check_finding_reaches_the_fix_loop_tagged_with_the_member, tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[thread-fails], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[quiet-is-clean], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[changes-requested], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[summary-unread], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[silent], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_settles_each_repository_s_bot_on_its_own_memory[each-settles], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_settles_each_repository_s_bot_on_its_own_memory[an-unread-repository-keeps-its-memory], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[unfinished-check-stops], tests/adapters/forge/test_run_review.py::test_kraft_s_own_verdict_names_each_finding_once[file-without-line], tests/adapters/forge/test_run_review.py::test_kraft_s_own_verdict_names_each_finding_once[changes-requested-with-threads], tests/adapters/forge/test_reviewer_feedback.py::test_reviewer_feedback_reads[glab-bot-approved]
+enforced-by: tests/adapters/forge/test_run_watch_ci.py::test_a_red_pipeline_the_review_wait_reads_is_the_ci_wait_s_finding, tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_s_bot_findings_reach_the_fix_loop_named_from_its_checkout[a-member-s-thread], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_s_bot_findings_reach_the_fix_loop_named_from_its_checkout[the-root-s-thread], tests/adapters/forge/test_run_review.py::test_kraft_s_own_verdict_names_each_finding_once[a-member-s-pathless-finding], tests/adapters/forge/test_run_review.py::test_a_member_s_check_finding_reaches_the_fix_loop_tagged_with_the_member, tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[thread-fails], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[quiet-is-clean], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[changes-requested], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[summary-unread], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[silent], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_settles_each_repository_s_bot_on_its_own_memory[each-settles], tests/adapters/forge/test_run_review.py::test_a_multi_repo_item_settles_each_repository_s_bot_on_its_own_memory[an-unread-repository-keeps-its-memory], tests/adapters/forge/test_run_review.py::test_a_bot_with_nothing_reading_its_feedback_is_settled_then_judged_by_kraft[unfinished-check-stops], tests/adapters/forge/test_run_review.py::test_kraft_s_own_verdict_names_each_finding_once[file-without-line], tests/adapters/forge/test_run_review.py::test_kraft_s_own_verdict_names_each_finding_once[changes-requested-with-threads], tests/adapters/forge/test_reviewer_feedback.py::test_reviewer_feedback_reads[glab-bot-approved]
 origin: src/kraft/adapters/forge/run.py §_verdict -- Omid, 2026-10-29: a GitLab bot that only comments never approves, so on a chain without the triage step every item waited out the 30 minutes and stopped. Support every bot configuration; a bot silent until the timeout means carry on.
 
 ## REQ automated-review-names-a-bot-that-never-reviews

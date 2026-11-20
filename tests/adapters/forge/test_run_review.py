@@ -18,6 +18,7 @@ from kraft import executor, policy, store, waits
 from kraft.adapters import forge
 from kraft.automated_review import AutomatedReview, as_reviewers
 from kraft.executor import dispatch
+from kraft.templates.models import ForgeTask
 
 from .nodes import forge_node
 from .test_run_chain import _multi_repo_item, _run_task, _with_origin
@@ -92,6 +93,8 @@ async def test_the_nearest_layer_s_reviewers_reach_the_review_task(
         ("mr.automated_review", {"reviewers": [{"login": "b"}]}, True),
         ("mr.automated_review", {"wait": {"grace_period": "30s"}}, False),
         ("mr.ci", {"wait": {"grace_period": "30s"}}, True),
+        ("mr.ci", {"watch_ci": True}, True),
+        ("mr.automated_review", {"watch_ci": True}, True),
     ],
     ids=[
         "the-review",
@@ -99,6 +102,8 @@ async def test_the_nearest_layer_s_reviewers_reach_the_review_task(
         "malformed-entry",
         "grace-period-on-the-review",
         "grace-period-on-another-wait",
+        "watch-ci-on-another-wait",
+        "watch-ci-with-no-ci-wait-after-it",
     ],
 )
 def test_only_the_review_task_names_reviewers(target, fields, refused):
@@ -112,6 +117,92 @@ def test_only_the_review_task_names_reviewers(target, fields, refused):
             v1_resolved(nodes)
     else:
         v1_resolved(nodes)
+
+
+_WATCHING = {"id": "review", "kind": "forge", "target": "mr.automated_review", "watch_ci": True}
+_CI_WAIT = {"id": "ci", "kind": "forge", "target": "mr.ci"}
+
+
+def _steps(*groups):
+    return [{"id": f"s{i}", "tasks": list(g)} for i, g in enumerate(groups)]
+
+
+@pytest.mark.parametrize(
+    "nodes, refused",
+    [
+        ([{"id": "n", "kind": "exec", "steps": _steps([_WATCHING], [_CI_WAIT])}], False),
+        ([{"id": "n", "kind": "exec", "steps": _steps([_WATCHING, _CI_WAIT])}], True),
+        ([{"id": "n", "kind": "exec", "steps": _steps([_CI_WAIT], [_WATCHING])}], True),
+        (
+            [
+                {
+                    "id": "n",
+                    "kind": "exec",
+                    "steps": _steps([_WATCHING]),
+                    "on_failure": {"tasks": [_CI_WAIT]},
+                }
+            ],
+            True,
+        ),
+        (
+            [
+                {
+                    "id": "n",
+                    "kind": "exec",
+                    "steps": _steps([_WATCHING]),
+                    "fix_loop": {"tasks": [_CI_WAIT]},
+                }
+            ],
+            True,
+        ),
+        (
+            [
+                {
+                    "id": "n",
+                    "kind": "exec",
+                    "steps": _steps([_CI_WAIT], [_CI_WAIT | {"id": "ci2"}]),
+                    "fix_loop": {"tasks": [_WATCHING]},
+                }
+            ],
+            True,
+        ),
+        (
+            [
+                {"id": "n", "kind": "exec", "steps": _steps([_WATCHING])},
+                {"id": "m", "kind": "exec", "tasks": [_CI_WAIT]},
+            ],
+            True,
+        ),
+    ],
+    ids=[
+        "a-later-step",
+        "the-same-step",
+        "an-earlier-step",
+        "only-in-on-failure",
+        "only-in-the-fix-loop",
+        "watching-from-the-fix-loop",
+        "in-a-later-node",
+    ],
+)
+def test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node(nodes, refused):
+    """The CI wait owns CI; the review wait only looks ahead for it, so it needs
+    one in a later step of its own node, never a handler's or another node's."""
+    if refused:
+        with pytest.raises(ValidationError, match="watch_ci"):
+            v1_resolved(nodes)
+    else:
+        [node] = v1_resolved(nodes).nodes
+        assert node.ci_wait_after("n.s0.review").path == "n.s1.ci"
+
+
+@pytest.mark.parametrize(
+    "target, hidden",
+    [("mr.automated_review", False), ("mr.ci", True)],
+    ids=["the-review", "another-wait"],
+)
+def test_the_watch_ci_row_shows_only_on_the_review_wait(target, hidden):
+    task = ForgeTask.model_validate({"id": "t", "kind": "forge", "target": target})
+    assert ("watch_ci" in task.unread()) is hidden
 
 
 # --- the collect path ------------------------------------------------------------
@@ -146,7 +237,7 @@ def _shipped_triage_step() -> dict:
     return {**step, "tasks": [{"id": task["id"], **own, "harness": "fake"}]}
 
 
-def _review_node(minutes, *, reads=True, reviewers=(_A, _B), loop=False):
+def _review_node(minutes, *, reads=True, reviewers=(_A, _B), loop=False, watch_ci=False):
     """One node: the review wait, and (when `reads`) a task that reads what it
     collected, in the step after. `loop` gives it the recovery the shipped
     `post_draft_feedback` has: `on_failure` for a failed check, a fix loop for
@@ -159,9 +250,15 @@ def _review_node(minutes, *, reads=True, reviewers=(_A, _B), loop=False):
         "policy": {"total_time_cap_minutes": minutes},
         "wait": {"polling": {"initial_interval": "30s", "max_interval": "2m"}},
     }
+    if watch_ci:
+        wait["watch_ci"] = True
     steps = [{"id": "settle", "tasks": [wait]}]
     if reads:
         steps.append(_shipped_triage_step())
+    if watch_ci:
+        steps.append(
+            {"id": "ci", "tasks": [{"id": "await_ci", "kind": "forge", "target": "mr.ci"}]}
+        )
     node = {"id": "feedback", "kind": "exec", "steps": steps}
     if loop:
 
@@ -186,6 +283,8 @@ def rig(item_on, database, run_dirs, monkeypatch, wait_clock, tmp_path):
 
     class Rig:
         triaged: list[str] = []
+        #: The instruction each launch was given, parallel to `triaged`.
+        instructions: list[str] = []
         verdicts: list[list[dict]] = []
 
         async def __call__(self, node, fake):
@@ -193,10 +292,11 @@ def rig(item_on, database, run_dirs, monkeypatch, wait_clock, tmp_path):
             # A harness for the reading task to select; what it launches is
             # replaced below, since only whether it is reached is asked.
             monkeypatch.setenv("KRAFT_HOME", str(fake_harness_home(tmp_path, ["true"])))
-            self.triaged, self.verdicts = [], []
+            self.triaged, self.instructions, self.verdicts = [], [], []
 
             async def launched(db, run_dirs, t, node, row, worktree, *, task, common, **_):
                 self.triaged.append(task.path)
+                self.instructions.append(_.get("instruction", ""))
                 if ".fix_loop." in task.path:
                     # A repair that changes nothing stops the loop.
                     (Path(worktree) / "repaired.txt").write_text("x")
@@ -482,14 +582,15 @@ async def test_a_check_with_nothing_reading_it_takes_the_direct_path_and_its_tim
     assert got == "capped_out"
 
 
-async def _both_halves_changed(item_on, database, run_dirs, tmp_path):
-    """A workspace item whose member (`repos/pkg`) and root both changed, so
-    each opens a merge request and the review wait reads both."""
+async def _both_halves_changed(item_on, database, run_dirs, tmp_path, halves=("pkg", "root")):
+    """A workspace item whose `halves` (the member `repos/pkg`, the root) changed,
+    so each opens a merge request and the review wait reads those."""
     it, worktree, branch = await _multi_repo_item(item_on, database, run_dirs, tmp_path, "ignore")
     _with_origin(tmp_path, it, worktree)
     for where, name in ((worktree / "repos" / "pkg", "pkg"), (worktree, "root")):
-        write(where, f"{name}.txt", "x\n")
-        commit_all(where)
+        if name in halves:
+            write(where, f"{name}.txt", "x\n")
+            commit_all(where)
     return it, worktree, branch
 
 
