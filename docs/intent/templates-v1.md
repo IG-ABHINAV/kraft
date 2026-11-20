@@ -1258,7 +1258,9 @@ enforced-by: tests/templates/test_models.py::test_recovery_plan_and_fix_loop_als
 
 After each successful fix-loop attempt, the system SHALL rerun the execution
 node from its first step before deciding whether another attempt is needed.
-enforced-by: tests/executor/test_walk.py::test_a_fix_loop_attempt_remeasures_the_node_from_its_first_step
+WHEN the fix loop doesn't start on a measurement that ended early, the system
+SHALL instead continue it with the steps that didn't run.
+enforced-by: tests/executor/test_walk.py::test_a_fix_loop_attempt_remeasures_the_node_from_its_first_step, tests/executor/test_walk_early.py::test_a_declined_early_start_continues_and_amends_its_record[ci-at-once]
 
 ## REQ fix-loop-is-bounded-and-detects-stall
 
@@ -1266,8 +1268,10 @@ A fix loop SHALL enforce its effective attempt and duration limits and SHALL
 stop for a human when the loop is exhausted or detects that it is not making
 progress. A fix-loop repair round that changes none of the checkout, a review
 thread or the merge request description SHALL stop the loop for a human without
-measuring the node again.
-enforced-by: tests/test_fix_loop.py::test_fix_loop_cap_breach, tests/test_fix_loop.py::test_fix_loop_wall_clock_breach, tests/test_fix_loop_memory.py::test_a_reworded_repeat_is_recognised_as_the_same_finding, tests/skills/test_fix_loop_judge.py::test_stuck_fingerprint_found_once_it_survives_enough_fixes, tests/executor/test_seeded_failure_walk.py::test_a_failing_item_walks_recovery_then_the_fix_loop_then_escalation, tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[rate_limited-rate_limited-rate_limited], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[waiting-waiting-waiting], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[infra_stop-needs_human-needs_human], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[config_error-needs_human-needs_human], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[paused-paused-active], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_ran_and_failed_is_a_spent_attempt, tests/executor/test_fix_loop_outcomes.py::test_a_refunded_cycle_does_not_read_as_no_progress_on_re_entry, tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[done], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[failed], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[with-concerns], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[after-an-earlier-thread-update], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[uncommitted-edit], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[thread-reply], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[snapshot-refused], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[mr-meta-edit]
+measuring the node again. A finding the measurement did not re-read SHALL
+neither extend nor reset its stall count, and the whole-set check SHALL NOT
+compare a measurement with a previous one that read other tasks.
+enforced-by: tests/test_fix_loop.py::test_fix_loop_cap_breach, tests/test_fix_loop.py::test_fix_loop_wall_clock_breach, tests/test_fix_loop_memory.py::test_a_reworded_repeat_is_recognised_as_the_same_finding, tests/skills/test_fix_loop_judge.py::test_stuck_fingerprint_found_once_it_survives_enough_fixes, tests/executor/test_seeded_failure_walk.py::test_a_failing_item_walks_recovery_then_the_fix_loop_then_escalation, tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[rate_limited-rate_limited-rate_limited], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[waiting-waiting-waiting], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[infra_stop-needs_human-needs_human], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[config_error-needs_human-needs_human], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_never_ran_spends_no_attempt_and_names_its_own_cause[paused-paused-active], tests/executor/test_fix_loop_outcomes.py::test_a_repair_that_ran_and_failed_is_a_spent_attempt, tests/executor/test_fix_loop_outcomes.py::test_a_refunded_cycle_does_not_read_as_no_progress_on_re_entry, tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[done], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[failed], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[with-concerns], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_nothing_stops_without_measuring_again[after-an-earlier-thread-update], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[uncommitted-edit], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[thread-reply], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[snapshot-refused], tests/executor/test_fix_loop_outcomes.py::test_a_fix_round_that_changed_anything_measures_again[mr-meta-edit], tests/executor/test_measurement.py::test_an_unmeasured_finding_holds_its_stuck_streak[held-not-reset], tests/executor/test_walk_early.py::test_the_whole_set_stuck_check_needs_the_same_tasks_read[previous-read-other-tasks]
 
 ## REQ findings-measured-lists-the-tasks-with-a-session
 
@@ -1279,9 +1283,20 @@ origin: src/kraft/executor/walk.py
 ## REQ a-step-that-did-not-run-contributes-nothing
 
 WHEN a node is measured and an earlier step's latest result did not advance,
-the system SHALL NOT read a later step's result recorded before it.
-enforced-by: tests/executor/test_scopes.py::test_collect_findings_reads_a_later_step_only_if_no_earlier_step_stopped_after_it[stale], tests/executor/test_measurement.py::test_a_later_steps_question_is_asked_only_if_no_earlier_step_stopped_after_it[earlier-step-stopped-after-it]
+the system SHALL NOT read a later step's result recorded before it. For a node
+whose fix loop starts early, the system SHALL read no step past the one the
+measurement reached, whatever an earlier step recorded.
+enforced-by: tests/executor/test_scopes.py::test_collect_findings_reads_a_later_step_only_if_no_earlier_step_stopped_after_it[stale], tests/executor/test_measurement.py::test_a_later_steps_question_is_asked_only_if_no_earlier_step_stopped_after_it[earlier-step-stopped-after-it], tests/executor/test_measurement.py::test_a_measurement_reads_only_the_steps_it_reached[early-reads-the-steps-it-reached]
 origin: src/kraft/executor/dispatch.py
+
+## REQ a-resumed-measurement-reads-its-own-rows
+
+WHEN a node's fix loop starts early and a measurement of the node is resumed
+after a park, a crash or a resume, the system SHALL continue it at its own round
+and SHALL read as its result only the steps it has reached, its reused and
+preserved sessions included.
+enforced-by: tests/executor/test_walk_early.py::test_a_parked_re_measure_resumes_at_its_own_round[own-round], tests/executor/test_walk_early.py::test_a_parked_re_measure_resumes_at_its_own_round[after-a-restart], tests/executor/test_measurement.py::test_a_measurement_reads_only_the_steps_it_reached[early-reads-the-steps-it-reached]
+origin: src/kraft/executor/walk.py
 
 ## REQ fix-cycle-started-carries-the-attempt-cap
 
@@ -1306,14 +1321,61 @@ enforced-by: tests/skills/test_fix_loop_judge.py::test_round_one_fixes_freely_no
 ## REQ fix-loop-judge-has-three-decisions
 
 A fix-loop judge SHALL decide whether to continue fixing, accept a clean
-execution result, or stop for a human.
-enforced-by: tests/skills/test_fix_loop_judge.py::test_judge_continue_behaves_like_no_judge_present, tests/skills/test_fix_loop_judge.py::test_judge_stop_needs_human_preempts_the_cap, tests/skills/test_fix_loop_judge.py::test_judge_stop_downgrade_exits_the_loop_clean, tests/skills/test_fix_loop_judge.py::test_judge_stop_downgrade_does_not_downgrade_a_failing_task, tests/executor/test_agent_inputs.py::test_the_seeded_fix_loop_judge_declares_the_package_and_its_method
+execution result, or stop for a human. A `stop_downgrade` on a measurement that
+ended early SHALL continue that measurement rather than complete the node.
+enforced-by: tests/executor/test_walk_early.py::test_a_declined_early_start_continues_and_amends_its_record[ci-at-once], tests/skills/test_fix_loop_judge.py::test_judge_continue_behaves_like_no_judge_present, tests/skills/test_fix_loop_judge.py::test_judge_stop_needs_human_preempts_the_cap, tests/skills/test_fix_loop_judge.py::test_judge_stop_downgrade_exits_the_loop_clean, tests/skills/test_fix_loop_judge.py::test_judge_stop_downgrade_does_not_downgrade_a_failing_task, tests/executor/test_agent_inputs.py::test_the_seeded_fix_loop_judge_declares_the_package_and_its_method
 
 ## REQ fix-loop-judge-cannot-override-limits
 
 A fix-loop judge SHALL NOT cause the system to exceed the loop's effective
 attempt or duration limits.
 enforced-by: tests/skills/test_fix_loop_judge.py::test_judge_continue_behaves_like_no_judge_present
+
+## REQ fix-loop-may-start-early
+
+A node's fix loop MAY set `early`, which is off by default. A node without a
+fix loop, and a recovery plan, SHALL NOT set it.
+
+WHEN it does, and a step of the node's own steps finishes with every task
+advanced and at least one finding at the loop severities that the fix loop
+hasn't declined on the current commit, the system SHALL end the measurement
+there without running the later steps, and SHALL hand the findings to the fix
+loop without running the node's `on_failure`. Every outcome that outranks a
+failed task SHALL outrank ending early.
+enforced-by: tests/templates/test_failure_controls.py::test_early_is_a_flag_of_the_fix_loop_only[off-by-default], tests/templates/test_failure_controls.py::test_early_is_a_flag_of_the_fix_loop_only[on], tests/templates/test_failure_controls.py::test_early_is_a_flag_of_the_fix_loop_only[a-bool-only], tests/templates/test_failure_controls.py::test_early_is_a_flag_of_the_fix_loop_only[not-on-the-node], tests/templates/test_failure_controls.py::test_early_is_a_flag_of_the_fix_loop_only[not-on-a-recovery-plan], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[ends-early], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[early-off], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[below-the-loop-severities], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[a-failed-co-task-keeps-failed], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[a-pause-outranks-it], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[a-rate-limit-outranks-it], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[declined-on-this-commit], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[declined-on-another-commit], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[in-the-last-step], tests/executor/test_walk_early.py::test_an_early_end_goes_straight_to_the_fix_loop[measured-first], tests/executor/test_walk_early.py::test_an_early_end_goes_straight_to_the_fix_loop[after-on_failure]
+origin: src/kraft/executor/dispatch.py
+
+## REQ a-declined-early-start-is-saved-for-the-commit
+
+WHEN the fix loop doesn't start on a measurement that ended early, the system
+SHALL record that outcome for the commit in the judge's verdict event. Every
+later measurement of that commit in the node's run, the re-measure after
+`on_failure` included, SHALL NOT end early on those findings, collect them,
+hand them to the fix loop or ask the judge about them again.
+enforced-by: tests/executor/test_walk_early.py::test_a_declined_early_start_is_not_judged_again_on_the_same_commit[re-measure-passes], tests/executor/test_walk_early.py::test_a_declined_early_start_is_not_judged_again_on_the_same_commit[re-measure-fails], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[declined-on-this-commit], tests/executor/test_measurement.py::test_eligible_findings_end_a_measurement_early[declined-on-another-commit]
+origin: src/kraft/executor/walk.py
+
+## REQ a-declined-early-start-continues-the-measurement
+
+WHEN the fix loop doesn't start on a measurement that ended early, the system
+SHALL run only the node's steps that didn't run, at the same round, SHALL amend
+that measurement's one `findings_measured` event with their results instead of
+recording another, and SHALL complete the node only when they pass. A
+measurement whose record is written is over: a later entry SHALL start a new one.
+enforced-by: tests/executor/test_walk_early.py::test_a_declined_early_start_continues_and_amends_its_record[ci-at-once], tests/executor/test_walk_early.py::test_a_declined_early_start_continues_and_amends_its_record[ci-parks-first], tests/executor/test_walk_early.py::test_a_recorded_measurement_is_not_resumed
+origin: src/kraft/executor/walk.py
+
+## REQ unmeasured-findings-hold-their-place
+
+WHEN a measurement ends early, the system SHALL record the last findings of the
+measuring tasks it did not run apart from its findings, as unmeasured findings.
+A finding's measuring task SHALL be the session it was read from, never its
+`source_plugin`. They SHALL never be eligible or in the list to fix. They SHALL
+appear in the judge's and the repair's history marked as not re-read that round.
+They SHALL keep their identities and severities, hold their stall count, gain no
+REPEAT tag, and never read as fixed, regressed or stuck.
+enforced-by: tests/executor/test_walk_early.py::test_findings_an_early_end_did_not_re_read_are_kept_apart, tests/executor/test_measurement.py::test_unmeasured_findings_are_the_last_findings_of_the_tasks_not_read[by-the-session-that-read-it], tests/executor/test_measurement.py::test_unmeasured_findings_are_the_last_findings_of_the_tasks_not_read[a-blind-failure], tests/executor/test_measurement.py::test_unmeasured_findings_are_the_last_findings_of_the_tasks_not_read[read-by-another-task], tests/executor/test_measurement.py::test_an_unmeasured_finding_holds_its_stuck_streak[held-not-extended], tests/executor/test_measurement.py::test_an_unmeasured_finding_holds_its_stuck_streak[never-stuck-while-unread], tests/executor/test_measurement.py::test_regressed_fingerprints_finds_a_finding_a_fix_undid[a-gap-where-it-was-not-re-read], tests/executor/test_round_prompts.py::test_the_history_marks_a_finding_nobody_re_read
+origin: src/kraft/executor/dispatch.py
 
 ## REQ invalid-judge-result-does-not-block-the-loop
 
