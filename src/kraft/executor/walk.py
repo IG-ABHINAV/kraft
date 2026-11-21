@@ -4,7 +4,7 @@ import asyncio
 import json
 import math
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from kraft import builtins as _builtins
@@ -17,6 +17,7 @@ from kraft.adapters import forge as forge_mod
 from kraft.adapters import subprocess as _subprocess
 from kraft.executor import dispatch, entry, gates, prompts, stops
 from kraft.executor import read_only as _read_only
+from kraft.executor import replies as _replies
 from kraft.executor.context import (
     _ADVANCING,
     BASE_MOVED,
@@ -2023,6 +2024,10 @@ async def _walk_node_once(
                     facts=facts or None,
                     escalatable=not _red_pipeline_only(failed),
                 )
+        # Only records `no_fix_loop` when a bot has replies on: nothing here can act.
+        await _replies.posting_point(
+            db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+        )
         await node_runs.completed(
             db, Path(worktree) if worktree else None, work_item_id, node.id, run_dirs=run_dirs
         )
@@ -2109,6 +2114,11 @@ async def _walk_node_once(
             spent=spent,
             preserve=preserve,
         )
+        # Before the walk acts on the verdict: the fix loop never starts ahead of
+        # the replies it may answer. Not after a pause (a person said stop) or a
+        # read-only violation (the triage changed the tree: its replies are not trusted).
+        if verdict not in ("paused", READ_ONLY_VIOLATED):
+            await _replies.posting_point(db, run_dirs, work_item_id, node, row, worktree, launch)
         resume_step = 0
         preserve = frozenset()
         if verdict == BASE_MOVED:
@@ -2189,6 +2199,11 @@ async def _walk_node_once(
                 loop_severities=loop_severities,
                 spent=spent,
             )
+            # A doubted repair re-measured nothing: no posting point.
+            if r_verdict not in (REPAIR_DOUBTED, "paused", READ_ONLY_VIOLATED):
+                await _replies.posting_point(
+                    db, run_dirs, work_item_id, node, row, worktree, launch
+                )
             # `recover_node`'s re-measure is a real `dispatch.measure_node` call
             # against the node's own tasks again -- every sentinel that call can
             # produce for the ordinary top-of-loop measure can just as well come
@@ -2222,6 +2237,9 @@ async def _walk_node_once(
             if r_verdict == "ok":
                 if loop.early:
                     await db.write(lambda c: store.end_measurement(c, work_item_id))
+                await _replies.posting_point(
+                    db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+                )
                 await node_runs.completed(
                     db,
                     Path(worktree) if worktree else None,
@@ -2325,7 +2343,13 @@ async def _walk_node_once(
         dropped_findings: dict[str, int] = {}
         has_session: dict[str, bool] = {}
         found, reported_hooks = dispatch.collect_findings(
-            db, work_item_id, node, round, dropped=dropped_findings, has_session=has_session
+            db,
+            work_item_id,
+            node,
+            round,
+            dropped=dropped_findings,
+            has_session=has_session,
+            run_dirs=run_dirs,
         )
         # A `same_as` is only believable for a tag this round's reviewer was
         # actually shown. An invented or stale tag would collapse two distinct
@@ -2394,7 +2418,7 @@ async def _walk_node_once(
             "measured_tasks": sorted(p for p, ran in has_session.items() if ran),
             "unmeasured_tasks": sorted(p for p, ran in has_session.items() if not ran),
             "findings": [
-                {**asdict(f), **({"reported_severity": s} if s != f.severity else {})}
+                {**_findings.payload_of(f), **({"reported_severity": s} if s != f.severity else {})}
                 for f, s in zip(found, as_reported, strict=True)
             ],
             "fingerprints": prints,
@@ -2435,6 +2459,9 @@ async def _walk_node_once(
             if ended_early:
                 await _continue()
                 continue
+            await _replies.posting_point(
+                db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+            )
             await node_runs.completed(
                 db, Path(worktree) if worktree else None, work_item_id, node.id, run_dirs=run_dirs
             )
@@ -2566,7 +2593,7 @@ async def _walk_node_once(
                 "cycle": round,
                 "verdict": verdict,
                 "reasoning": reasoning,
-                "findings": [asdict(f) for f in eligible],
+                "findings": [_findings.payload_of(f) for f in eligible],
                 # A `stop_downgrade` with `ended_early` holds for this commit
                 # (`dispatch.declined_fingerprints`): the judge isn't paid again.
                 "head_sha": head_sha,
@@ -2597,6 +2624,9 @@ async def _walk_node_once(
                     # keeps those findings from coming back on this commit.
                     await _continue()
                     continue
+                await _replies.posting_point(
+                    db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+                )
                 await node_runs.completed(
                     db,
                     Path(worktree) if worktree else None,
