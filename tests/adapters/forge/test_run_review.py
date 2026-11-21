@@ -16,9 +16,8 @@ from support.harness import commit_all, entry_of, fake_harness_home, git, v1_res
 from kraft import builtins as _builtins
 from kraft import executor, policy, store, waits
 from kraft.adapters import forge
-from kraft.automated_review import AutomatedReview, as_reviewers
+from kraft.automated_review import BotReviewer, CheckReviewer, as_reviewers
 from kraft.executor import dispatch
-from kraft.templates.models import ForgeTask
 
 from .nodes import forge_node
 from .test_run_chain import _multi_repo_item, _run_task, _with_origin
@@ -60,7 +59,7 @@ async def test_the_nearest_layer_s_reviewers_reach_the_review_task(
     fake = forge.FakeForge()
     monkeypatch.setattr(forge.run, "resolve", lambda name: fake)
     node = forge_node(
-        "review", "mr.automated_review", **({} if task is None else {"reviewers": task})
+        "review", "mr.automated_review", **({} if task is None else {"config": {"reviewers": task}})
     )
     it = await item_on([node])
     if item is not None:
@@ -88,13 +87,16 @@ async def test_the_nearest_layer_s_reviewers_reach_the_review_task(
 @pytest.mark.parametrize(
     "target, fields, refused",
     [
+        ("mr.automated_review", {"config": {"reviewers": [{"bot": "b"}]}}, False),
+        ("mr.ci", {"config": {"reviewers": [{"bot": "b"}]}}, True),
+        ("mr.automated_review", {"config": {"reviewers": [{"login": "b"}]}}, True),
+        ("mr.automated_review", {"config": {"grace_period": "30s"}}, False),
+        ("mr.ci", {"config": {"grace_period": "30s"}}, True),
+        ("mr.ci", {"config": {"watch_ci": True}}, True),
+        ("mr.automated_review", {"config": {"watch_ci": True}}, True),
         ("mr.automated_review", {"reviewers": [{"bot": "b"}]}, False),
         ("mr.ci", {"reviewers": [{"bot": "b"}]}, True),
-        ("mr.automated_review", {"reviewers": [{"login": "b"}]}, True),
-        ("mr.automated_review", {"wait": {"grace_period": "30s"}}, False),
-        ("mr.ci", {"wait": {"grace_period": "30s"}}, True),
-        ("mr.ci", {"watch_ci": True}, True),
-        ("mr.automated_review", {"watch_ci": True}, True),
+        ("mr.automated_review", {"reviewers": [], "config": {"reviewers": []}}, True),
     ],
     ids=[
         "the-review",
@@ -104,6 +106,9 @@ async def test_the_nearest_layer_s_reviewers_reach_the_review_task(
         "grace-period-on-another-wait",
         "watch-ci-on-another-wait",
         "watch-ci-with-no-ci-wait-after-it",
+        "flat-reviewers-on-the-review",
+        "flat-reviewers-on-another-wait",
+        "flat-beside-config",
     ],
 )
 def test_only_the_review_task_names_reviewers(target, fields, refused):
@@ -119,7 +124,12 @@ def test_only_the_review_task_names_reviewers(target, fields, refused):
         v1_resolved(nodes)
 
 
-_WATCHING = {"id": "review", "kind": "forge", "target": "mr.automated_review", "watch_ci": True}
+_WATCHING = {
+    "id": "review",
+    "kind": "forge",
+    "target": "mr.automated_review",
+    "config": {"watch_ci": True},
+}
 _CI_WAIT = {"id": "ci", "kind": "forge", "target": "mr.ci"}
 
 
@@ -195,19 +205,9 @@ def test_watch_ci_looks_ahead_to_a_ci_wait_in_its_own_node(nodes, refused):
         assert node.ci_wait_after("n.s0.review").path == "n.s1.ci"
 
 
-@pytest.mark.parametrize(
-    "target, hidden",
-    [("mr.automated_review", False), ("mr.ci", True)],
-    ids=["the-review", "another-wait"],
-)
-def test_the_watch_ci_row_shows_only_on_the_review_wait(target, hidden):
-    task = ForgeTask.model_validate({"id": "t", "kind": "forge", "target": target})
-    assert ("watch_ci" in task.unread()) is hidden
-
-
 # --- the collect path ------------------------------------------------------------
 
-_A, _B = AutomatedReview(bot="a"), AutomatedReview(bot="b")
+_A, _B = BotReviewer(bot="a"), BotReviewer(bot="b")
 
 
 def _feedback(reviewer, active=None, *, threads=()):
@@ -246,12 +246,12 @@ def _review_node(minutes, *, reads=True, reviewers=(_A, _B), loop=False, watch_c
         "id": "review",
         "kind": "forge",
         "target": "mr.automated_review",
-        "reviewers": [r.model_dump(exclude_none=True) for r in reviewers],
+        "config": {"reviewers": [r.model_dump(exclude_none=True) for r in reviewers]},
         "policy": {"total_time_cap_minutes": minutes},
         "wait": {"polling": {"initial_interval": "30s", "max_interval": "2m"}},
     }
     if watch_ci:
-        wait["watch_ci"] = True
+        wait["config"]["watch_ci"] = True
     steps = [{"id": "settle", "tasks": [wait]}]
     if reads:
         steps.append(_shipped_triage_step())
@@ -467,7 +467,7 @@ def _said(reviewer, active, *, state=None, body=""):
     return replace(_feedback(reviewer, active), summaries=(summary,))
 
 
-_SCAN = AutomatedReview(check="scan")
+_SCAN = CheckReviewer(check="scan")
 #: A check still running.
 _RUNNING = forge.ReviewerFeedback(
     _SCAN, None, check={"name": "scan", "finished": False, "conclusion": None, "output": ""}
@@ -565,7 +565,7 @@ def test_kraft_s_own_verdict_names_each_finding_once(threads, summary, mount, fi
 async def test_a_check_with_nothing_reading_it_takes_the_direct_path_and_its_timeout_stops(
     item_on, database, run_dirs, monkeypatch, wait_clock
 ):
-    check = AutomatedReview(check="scan")
+    check = CheckReviewer(check="scan")
     it = await item_on([_review_node(1, reads=False, reviewers=(check,))])
     fake = forge.FakeForge(review_results=[forge.ReviewResult("pending")])
     ask = {
