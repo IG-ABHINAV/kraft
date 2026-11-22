@@ -9,12 +9,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from support.bot_threads import kraft_note, note
+from support.bot_threads import VIEWER, kraft_note, note
 
 from kraft import events
 from kraft.adapters.forge import settle
 from kraft.adapters.forge.models import ForgeNote, ReviewerFeedback
-from kraft.adapters.forge.replies import facts
+from kraft.adapters.forge.replies import facts, owed
 from kraft.automated_review import BotReviewer, CheckReviewer
 from kraft.vocab import ForgeEvent
 
@@ -149,23 +149,41 @@ def test_what_a_check_remembers_for_the_next(feedback, now, memory, key, expecte
     assert decide(feedback, now=now, memory=memory).memory[key] == expected
 
 
+_PLAIN_NOTE = (note("N1", "x", "fix"),)
+
+
 @pytest.mark.parametrize(
-    "notes, activity",
+    "notes, first, second, activity",
     [
-        ((note("N1", "x", "fix"), kraft_note("N2", "w1")), None),
-        ((note("N1", "x", "fix"),), at(40)),
+        ((note("N1", "x", "fix"), kraft_note("N2", "w1")), (), (), None),
+        (_PLAIN_NOTE, (), (), at(40)),
+        # Kraft first posts in T1 between the two checks, and then the bot resolves it.
+        (_PLAIN_NOTE, (), ("T1",), None),
     ],
-    ids=["bot-resolved-a-kraft-thread", "bot-resolved-another-thread"],
+    ids=[
+        "bot-resolved-a-kraft-thread",
+        "bot-resolved-another-thread",
+        "posted-between-checks-then-resolved",
+    ],
 )
-def test_a_thread_kraft_posted_in_leaves_the_compared_set(notes, activity):
+def test_a_thread_kraft_posted_in_leaves_the_compared_set(notes, first, second, activity):
     """The first check stores only the threads Kraft has not posted in, so the
-    bot resolving one Kraft answered is not activity."""
-    kraft = facts.Kraft("kraft-user", "w1", {})
-    first = decide([bot(threads=["T1"], notes=notes)], now=10, kraft=kraft)
+    bot resolving one Kraft answered is not activity, whether the thread shows a Kraft
+    note or only the record knows Kraft posted in it."""
+    before = decide(
+        [bot(threads=["T1"], notes=notes)],
+        now=10,
+        kraft=facts.Kraft("kraft-user", "w1", {}, frozenset(first)),
+    )
 
-    second = decide([bot()], now=40, memory=first.memory, kraft=kraft)
+    after = decide(
+        [bot()],
+        now=40,
+        memory=before.memory,
+        kraft=facts.Kraft("kraft-user", "w1", {}, frozenset(second)),
+    )
 
-    assert second.memory["bot:x"]["activity_at"] == (activity and activity.isoformat())
+    assert after.memory["bot:x"]["activity_at"] == (activity and activity.isoformat())
 
 
 def test_only_the_latest_summary_of_a_kind_is_collected():
@@ -288,3 +306,103 @@ def test_each_collected_note_says_whose_it_is():
         },
     ]
     assert entry["threads"][0]["body"] == "fix t1"  # unchanged
+
+
+def _said(nid, seconds, author="x"):
+    return note(nid, author, "text", at=at(seconds).isoformat())
+
+
+def _kraft_said(nid, seconds):
+    return kraft_note(nid, "w1", at=at(seconds).isoformat())
+
+
+def _replying(*threads, replies=True):
+    """One bot's feedback whose threads are `(id, notes)`, built in the test (the
+    `replies_on` fixture lifts the load refusal of `replies: true` first)."""
+    return lambda: ReviewerFeedback(
+        BotReviewer(bot="x", replies=replies),
+        None,
+        (),
+        tuple(
+            {"id": tid, "file": "a.py", "line": 1, "body": "fix", "notes": notes}
+            for tid, notes in threads
+        ),
+    )
+
+
+_TIMEOUT = timedelta(minutes=5)
+_ANSWERED = ("T1", (_said("B", 0), _kraft_said("K", 10), _said("B2", 20)))
+_SILENT = ("T2", (_said("B3", 0), _kraft_said("K2", 10)))
+_LATER = ("T3", (_said("B4", 0), _kraft_said("K3", 70)))
+_AHEAD = ("T4", (_said("B5", 0), _kraft_said("K4", 3600)))
+_PERSON = (
+    "T5",
+    (_said("B6", 0), note("P", "alice", "I disagree", type_="User"), _kraft_said("K5", 10)),
+)
+
+
+@pytest.mark.parametrize(
+    "feedback, threads, now, expected",
+    [
+        pytest.param(
+            [
+                _replying(
+                    _ANSWERED, ("T2", (_said("B3", 0), _kraft_said("K2", 10), _said("B7", 30)))
+                )
+            ],
+            ("T1", "T2"),
+            60,
+            (True, None),
+            id="every-thread-answered",
+        ),
+        pytest.param(
+            [_replying(_ANSWERED, _SILENT)],
+            ("T1", "T2"),
+            60,
+            (False, at(10) + _TIMEOUT),
+            id="one-thread-silent",
+        ),
+        pytest.param(
+            [_replying(_ANSWERED)], ("T1", "T2"), 60, (True, None), id="resolved-thread-is-done"
+        ),
+        pytest.param([_replying(_PERSON)], ("T5",), 60, (True, None), id="person-wrote-is-done"),
+        pytest.param([_replying(_SILENT)], ("T2",), 400, (True, None), id="past-the-deadline"),
+        pytest.param(
+            [_replying(_SILENT, _LATER)],
+            ("T2", "T3"),
+            100,
+            (False, at(70) + _TIMEOUT),
+            id="latest-deadline-among-the-pending",
+        ),
+        pytest.param(
+            [_replying(_SILENT, replies=False)],
+            ("T2",),
+            60,
+            (True, None),
+            id="a-reviewer-with-replies-off-is-ignored",
+        ),
+        pytest.param(
+            [_replying(_ANSWERED, _SILENT)],
+            ("T1",),
+            60,
+            (True, None),
+            id="an-unanswered-thread-outside-the-round-is-ignored",
+        ),
+        pytest.param(
+            [_replying(_AHEAD)],
+            ("T4",),
+            60,
+            (False, at(60) + _TIMEOUT),
+            id="forge-clock-ahead-clamps-the-deadline",
+        ),
+    ],
+)
+def test_the_reply_wait_is_done_when(replies_on, feedback, threads, now, expected):
+    got = settle.reply_wait(
+        [build() for build in feedback],
+        owed.ReplyWait(threads, _TIMEOUT),
+        now=at(now),
+        kraft=facts.Kraft(VIEWER, "w1", {}),
+    )
+
+    assert got == expected

@@ -500,6 +500,11 @@ class TaskBase(BaseModel):
         a forge task narrows by its target."""
         return self.TAKES_READS
 
+    def takes_reply_timeout(self) -> bool:
+        """Whether this task reads `policy.reply_timeout_minutes`: only the review
+        wait does (a reply round's wait for the bots' answers)."""
+        return False
+
     #: What only an agent launch reads, as `sources` names it (a policy cap as
     #: `policy.<cap>`). Steering is text for an agent's prompt, and the
     #: harness allowlist, the spend caps, the tool lists and the grants bound
@@ -527,7 +532,12 @@ class TaskBase(BaseModel):
         agent_only = (
             self.AGENT_ONLY & {"steering"} if self.on_failure is not None else self.AGENT_ONLY
         )
-        return agent_only if self.takes_reads() else agent_only | {"reads"}
+        agent_only = agent_only if self.takes_reads() else agent_only | {"reads"}
+        return (
+            agent_only
+            if self.takes_reply_timeout()
+            else agent_only | {"policy.reply_timeout_minutes"}
+        )
 
     def for_recovery(self) -> frozenset[str]:
         """The caps this task does not read but its `on_failure` recovery runs
@@ -1004,6 +1014,9 @@ class ForgeTask(TaskBase):
     def takes_reads(self) -> bool:
         return self.target is ForgeAction.CI_PIPELINE
 
+    def takes_reply_timeout(self) -> bool:
+        return self.target is ForgeAction.MR_AUTOMATED_REVIEW
+
     @model_validator(mode="after")
     def _ci_pipeline_takes_its_id(self) -> Self:
         if self.target is not ForgeAction.CI_PIPELINE:
@@ -1427,7 +1440,7 @@ class ExecNode(ExecutionShape):
     #: steps, its recovery plan, its fix loop and judge, its escalation task,
     #: its conflict handler, its merge-rejection repair -- and only here may
     #: `max_attempts`/`timeout_minutes` appear, because they bound this node's
-    #: fix loop.
+    #: fix loop, and `reply_cap_per_thread`/`reply_rounds_per_head`, its reply rounds.
     policy: TemplatePolicyOverride | None = None
     #: `task-step-and-node-are-skippable-by-default`: an operator may skip this
     #: component unless it says `false` here.
@@ -2825,11 +2838,15 @@ class MaterializedChain:
             except PathError as exc:
                 raise PolicyError(f"{where}: {exc}", field=where) from exc
             on_exec_node = at.scope is ControlScope.NODE and isinstance(at.node.node, ExecNode)
-            for name in ("max_attempts", "timeout_minutes"):
+            for name in (
+                "max_attempts",
+                "timeout_minutes",
+                "reply_cap_per_thread",
+                "reply_rounds_per_head",
+            ):
                 if getattr(layer, name) is not None and not on_exec_node:
                     raise PolicyError(
-                        f"{where}.{name}: bounds an execution node's fix loop, and {path!r} "
-                        "is not an execution node",
+                        f"{where}.{name}: applies to an execution node, and {path!r} is not one",
                         field=f"{where}.{name}",
                     )
         layered = replace(self, item_policy=item)

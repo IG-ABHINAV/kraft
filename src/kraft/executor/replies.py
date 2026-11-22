@@ -29,11 +29,15 @@ from kraft.adapters.forge import run as forge_run
 from kraft.adapters.forge.models import ForgeError
 from kraft.adapters.forge.mr import same_login
 from kraft.adapters.forge.replies import body, facts, gate, record, send
-from kraft.ci_reruns import node_run_start
 from kraft.config import git_read
 from kraft.executor import dispatch
 from kraft.executor import round_prompts as prompts
-from kraft.templates.models import AgentInput, AgentTask, ForgeAction, ForgeTask
+from kraft.executor.reply_round import latest_triage
+from kraft.executor.reply_round import own as _own
+from kraft.executor.reply_round import run_start as _run_start
+from kraft.executor.reply_round import triage_task as _triage
+from kraft.policy import DEFAULT_REPLY_CAP_PER_THREAD
+from kraft.templates.models import AgentTask, ForgeAction, ForgeTask
 from kraft.vocab import ADVANCING, ChainEvent, ForgeEvent
 from kraft.vocab.sql import marks
 from kraft.worker.worktree_read import read_no_follow
@@ -113,11 +117,6 @@ def _drop_report(path: Path, node_id: str) -> None:
         pass
 
 
-def _own(node) -> list:
-    """The node's own tasks: never its recovery's or its fix loop's."""
-    return [t for step in node.steps for t in step.tasks]
-
-
 def _review_wait(node):
     return next(
         (
@@ -127,43 +126,6 @@ def _review_wait(node):
         ),
         None,
     )
-
-
-def _triage(node):
-    return next(
-        (
-            t
-            for t in _own(node)
-            if isinstance(t.task, AgentTask) and AgentInput.BOT_FEEDBACK in t.task.inputs
-        ),
-        None,
-    )
-
-
-def _run_start(c, work_item_id: str, node_id: str) -> tuple[int, str]:
-    """Where the node's current run began: its event's seq, and its time, since a
-    session carries only a time (the comparison `bot_feedback_source` makes too)."""
-    seq = node_run_start(c, work_item_id, node_id)
-    row = (
-        c.execute("SELECT created_at FROM events WHERE seq = ?", (seq,)).fetchone() if seq else None
-    )
-    return seq, row["created_at"] if row else ""
-
-
-def latest_triage(c, work_item_id: str, node, since: str):
-    """The node's newest triage session since `since` that started an agent and
-    finished with a result: a head and an advancing status, `last_review_session`'s
-    filter. A skipped session has no head, so it is never the latest triage."""
-    hook = _triage(node)
-    if hook is None:
-        return None
-    return c.execute(
-        "SELECT id, head_sha, result_path, round FROM worker_sessions "
-        "WHERE work_item_id = ? AND node_id = ? AND hook_point = ? AND head_sha IS NOT NULL "
-        f"AND status IN ({marks(ADVANCING)}) AND created_at >= ? "
-        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-        (work_item_id, node.id, hook.path, *ADVANCING, since),
-    ).fetchone()
 
 
 @dataclass(frozen=True)
@@ -369,11 +331,21 @@ class _Point:
     def forges(self):
         return self.launch.forges() if self.launch and self.launch.forges else (None, None)
 
+    @property
+    def cap(self) -> int:
+        """Kraft's triage replies per thread: the node's `reply_cap_per_thread`."""
+        try:
+            return dispatch.scope_policy(self.row, self.node).reply_cap_per_thread
+        except LookupError:
+            return DEFAULT_REPLY_CAP_PER_THREAD
+
     def intents(self) -> dict[str, record.Intent]:
         return self.db.read(lambda c: record.read(c, self.wid))
 
     def kraft(self, intents) -> facts.Kraft:
-        return facts.Kraft(self.viewer, self.wid, record.posted_hashes(intents))
+        return facts.Kraft(
+            self.viewer, self.wid, record.posted_hashes(intents), record.thread_ids(intents)
+        )
 
     def latest(self):
         if self._latest is None:
@@ -964,7 +936,9 @@ class _Point:
             thread = await self.thread(p["thread"])
             held = self.intents()
             kraft = self.kraft(held)
-            why = gate.triage_refusal(thread, bots=self.bots, on=self.on, kraft=kraft, intents=held)
+            why = gate.triage_refusal(
+                thread, bots=self.bots, on=self.on, kraft=kraft, intents=held, cap=self.cap
+            )
             if why is not None:
                 return ("refused", why)
             seen = prompts.collected_threads(self.run_dirs, self.wid, latest["id"])
