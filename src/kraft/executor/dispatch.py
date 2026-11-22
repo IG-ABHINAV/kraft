@@ -10,7 +10,7 @@ import shlex
 import sqlite3
 import stat
 import traceback
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +42,7 @@ from kraft.executor.context import (
     CHECKOUT_REFUSED,
     CONFIG_ERROR,
     CONFLICT,
+    ENDED_EARLY,
     INFRA_STOP,
     LANDED_UNREVIEWED,
     MERGE_REJECTED,
@@ -1694,14 +1695,17 @@ async def _dispatch_task_in(
     time_cap = _caps.Deadline(_caps.monotonic() + hit.remaining_s, hit) if hit else None
     # Nothing for a task reading what the review bots said means nothing to
     # spend on: no checkout taken, no sandbox, no session started
-    # (`bot-feedback-is-delivered-to-a-task-that-declares-it`).
+    # (`bot-feedback-with-nothing-to-judge-starts-no-agent`).
     if (
         isinstance(t, AgentTask)
         and AgentInput.BOT_FEEDBACK in t.inputs
         and prompts.bot_feedback_source(db, run_dirs, work_item_row["id"], node, round) is None
     ):
         return await skipped_session(
-            db, run_dirs, common, "no bot feedback collected; no agent started\n"
+            db,
+            run_dirs,
+            common,
+            "nothing in the bot feedback could need a change; no agent started\n",
         )
     if not isinstance(t, ForgeTask):
         # Resolved here, once, for every launch this task makes (Ruling 189):
@@ -1937,6 +1941,12 @@ async def _dispatch_task_in(
                 for other in node.tasks()
             ),
             grace=t.grace,
+            watch_ci=t.watch_ci,
+            ci_task=(
+                ci.path
+                if t.watch_ci and (ci := node.ci_wait_after(task.path)) is not None
+                else None
+            ),
             pipeline=t.pipeline,
             reads=reads,
             declared=declared,
@@ -2902,7 +2912,24 @@ async def measure_node(
     node_before = await _snapshot(
         own and getattr(node.node, "read_only", False), [t for g in groups for t in g.tasks]
     )
+    if own and _starts_early(node):
+        # One measurement spans its parks and resumes: only the first entry at a
+        # round opens it, a later one finds it open.
+        open_at = open_measurement(db, work_item_id, node.id)
+        if open_at is None or open_at["round"] != round:
+            await db.write(lambda c: store.begin_measurement(c, work_item_id, node.id, round))
     outcomes: list[tuple[ResolvedTask, object]] = []
+    early = own and _starts_early(node)
+    ended_early = False
+
+    def _ends_early(step: ResolvedStep) -> bool:
+        """Whether `step`, which just advanced, reports a finding the fix loop would
+        take that it has not already declined on this commit."""
+        found, _ = collect_findings(db, work_item_id, node, round, steps=(step,), run_dirs=run_dirs)
+        head = _config.git_read(Path(worktree), "rev-parse", "HEAD") if worktree else None
+        declined = declined_fingerprints(db, work_item_id, node.id, head)
+        return any(f.severity in loop_severities and f.fingerprint not in declined for f in found)
+
     for index, step in enumerate(groups):
         # A resumed node skips the steps before `start_step` -- they already
         # passed.
@@ -2923,6 +2950,11 @@ async def measure_node(
         # `_ADVANCING` (executor/context.py) is the existing definition of
         # "this task moved the node forward": ("done", "done_with_concerns").
         if any(isinstance(r, BaseException) or r not in _ADVANCING for r in results):
+            break
+        # Not at the last step: nothing would be skipped, so it is an ordinary
+        # measurement.
+        if early and index < len(groups) - 1 and _ends_early(step):
+            ended_early = True
             break
     if all(r != READ_ONLY_VIOLATED for _, r in outcomes) and await _wrote(node_before, node.id):
         outcomes = [(t, READ_ONLY_VIOLATED) for t, _ in outcomes]
@@ -3006,7 +3038,7 @@ async def measure_node(
     failed = [t for t, r in outcomes if isinstance(r, BaseException) or r not in _ADVANCING]
     if failed:
         return "failed", failed, excs
-    return "ok", [], []
+    return (ENDED_EARLY if ended_early else "ok"), [], []
 
 
 #: A task in one of these states failed outright. `measure_node` fails these
@@ -3092,7 +3124,7 @@ async def run_recovery(
             },
         )
     )
-    found, _reported = collect_findings(db, work_item_id, node, measured_round)
+    found, _reported = collect_findings(db, work_item_id, node, measured_round, run_dirs=run_dirs)
     seeded = prompts.seeded_findings_note(found) if found else None
     note = f"{note}\n{prompts.SUGGEST_ACTION}"
     context = f"{note}\n\n{seeded}" if seeded else note
@@ -3154,8 +3186,46 @@ def measured_tasks(
     return {t.path: t for step in (node.steps if steps is None else steps) for t in step.tasks}
 
 
+def _starts_early(node: ResolvedNode) -> bool:
+    """Whether the node's fix loop may start before the node has finished measuring."""
+    loop = getattr(node.node, "fix_loop", None)
+    return bool(loop and loop.early)
+
+
+def open_measurement(db, work_item_id: str, node_id: str) -> dict | None:
+    """The item's open measurement of `node_id`, with the step cursor as `"step"`.
+
+    Open means stored for this node and begun at or after the node's current run
+    (`ci_reruns.node_run_start`): a retry, a fork, a base-change or merge-rejection
+    restart, a gate decision and the node's completion each start a new run, so
+    a measurement stopped before its record never outlives them. A park, a crash
+    and a resume write none of those, so it goes on through them. `walk` and
+    `measure_node` both read it here, never from the store."""
+
+    def read(c):
+        stored = store.stored_measurement(c, work_item_id)
+        if stored is None or stored["node_id"] != node_id:
+            return None
+        run_start = ci_reruns.node_run_start(c, work_item_id, node_id)
+        return stored if stored["since"] >= run_start else None
+
+    return db.read(read)
+
+
+def _reached(db, work_item_id: str, node: ResolvedNode) -> int | None:
+    """The step the node's measurement has reached (its cursor), for a node whose
+    fix loop starts early; None for every other node, which reads as before."""
+    if not _starts_early(node):
+        return None
+    return db.read(
+        lambda c: c.execute(
+            "SELECT current_step FROM work_items WHERE id = ?", (work_item_id,)
+        ).fetchone()["current_step"]
+    )
+
+
 def _current_rows(
-    rows: list[sqlite3.Row], steps: tuple[ResolvedStep, ...]
+    rows: list[sqlite3.Row], steps: tuple[ResolvedStep, ...], reached: int | None = None
 ) -> dict[str, list[sqlite3.Row]]:
     """The rows that are this measurement's result, by task path.
 
@@ -3173,12 +3243,20 @@ def _current_rows(
     last row, or for a builtin scope loop every row at its latest head. The
     barrier is judged by those same rows, so it fires only where the collector
     itself reads the earlier task as not passed.
+
+    `reached`, given for a node whose fix loop starts early, replaces that rule:
+    an early end leaves the later steps' rows from an earlier measurement in
+    place, and the barrier cannot see them. A step past `reached` (the cursor)
+    contributes nothing, and every step up to it reads its latest rows whatever
+    their status, a reused or preserved session included.
     """
     # shortcut: a task an operator skipped after it failed still sets the barrier
     # (a skip writes no row), upgrade if a later step's reused row must survive it.
     current: dict[str, list[sqlite3.Row]] = {}
     barrier = -1
-    for step in steps:
+    for index, step in enumerate(steps):
+        if reached is not None and index > reached:
+            break
         # Moved only once the step is done: its tasks ran together, so none of
         # them is evidence about another.
         stopped_at = barrier
@@ -3186,7 +3264,7 @@ def _current_rows(
             mine = [
                 (i, row)
                 for i, row in enumerate(rows)
-                if i > barrier and row["hook_point"] == task.path
+                if (reached is not None or i > barrier) and row["hook_point"] == task.path
             ]
             if not mine:
                 continue
@@ -3212,8 +3290,14 @@ def collect_findings(
     steps: tuple[ResolvedStep, ...] | None = None,
     dropped: dict[str, int] | None = None,
     has_session: dict[str, bool] | None = None,
+    run_dirs=None,
 ):
     """(findings, task paths that reported at least one) for one cycle.
+
+    A parsed finding keeps only the review-bot thread ids that were in the
+    collection its session was handed, of a bot with replies on, and on its own
+    file (`findings.on_their_files`); without `run_dirs` no collection is known
+    and every thread id is dropped.
 
     `dropped`, when given, is filled with `{task path: entries the parser threw
     away as malformed}`, so a caller can record that a reviewer wrote its
@@ -3278,7 +3362,11 @@ def collect_findings(
     """
     tasks = measured_tasks(node, steps)
     rows = db.read(lambda c: store.sessions_for_round(c, work_item_id, node.id, round))
-    by_hook = _current_rows(rows, node.steps if steps is None else steps)
+    by_hook = _current_rows(
+        rows,
+        node.steps if steps is None else steps,
+        _reached(db, work_item_id, node) if steps is None else None,
+    )
     if has_session is not None:
         has_session.update({path: path in by_hook for path in tasks})
     found: list[_findings.Finding] = []
@@ -3289,6 +3377,15 @@ def collect_findings(
             parsed, n_dropped = _findings.parse_counted(row["result_path"])
             if n_dropped and dropped is not None:
                 dropped[hook] = dropped.get(hook, 0) + n_dropped
+            if parsed and any(f.threads for f in parsed):
+                collected = (
+                    prompts.collected_threads(run_dirs, work_item_id, row["id"]) if run_dirs else {}
+                )
+                # Only a thread of a bot with replies on: with replies off a finding
+                # keeps no thread id, so no payload, prompt or copy changes.
+                parsed = _findings.on_their_files(
+                    parsed, {tid: t.get("file") for tid, t in collected.items() if t["replies"]}
+                )
             if parsed:
                 reported.add(hook)
                 job = _findings.JobRef(
@@ -3364,7 +3461,7 @@ def needs_context_question(
     # pass's question. `_current_rows` drops a task's oldest rows first, so its
     # latest row survives exactly when the task is still in the result.
     measuring = measured_tasks(node)
-    current = _current_rows(rows, node.steps)
+    current = _current_rows(rows, node.steps, _reached(db, work_item_id, node))
     latest: dict[str, sqlite3.Row] = {}
     for row in rows:
         hook = row["hook_point"]
@@ -3421,6 +3518,72 @@ def previous_fix_session(db, work_item_id: str, node: ResolvedNode) -> sqlite3.R
     return rows[-1] if rows else None
 
 
+def _task_of(raw: dict, tasks: Collection[str]) -> str:
+    """The measuring task that read a stored finding: the session it came from
+    (the first of its `jobs` labels naming one of `tasks`), never its
+    `source_plugin`, which a task may set to another's path. Only a blind
+    failure, whose labels are its commands, falls back to `source_plugin`:
+    Kraft's own value there, the session's hook point."""
+    for job in raw.get("jobs") or []:
+        if job.get("label") in tasks:
+            return job["label"]
+    return raw.get("source_plugin", "")
+
+
+def unmeasured_findings(
+    previous: dict | None,
+    measured_tasks: Collection[str],
+    unmeasured_tasks: Collection[str],
+    found: Sequence[_findings.Finding],
+) -> list[dict]:
+    """The last findings of the tasks a measurement that ended early did not run.
+
+    `previous` is the previous record's payload: its `findings`, then its own
+    `unmeasured`, are looked through for what an unmeasured task last reported
+    and `found` (this measurement) does not re-report. Copied verbatim, so
+    severities and `jobs` are kept, and deduplicated by tag."""
+    if previous is None:
+        return []
+    tasks = {*measured_tasks, *unmeasured_tasks}
+    read_now = {f.fingerprint for f in found}
+    out: dict[str, dict] = {}
+    for raw in (*previous.get("findings", []), *previous.get("unmeasured", [])):
+        tag = _findings.from_payload(raw).fingerprint
+        if _task_of(raw, tasks) in unmeasured_tasks and tag not in read_now:
+            out.setdefault(tag, raw)
+    return list(out.values())
+
+
+def declined_fingerprints(
+    db, work_item_id: str, node_id: str, head_sha: str | None
+) -> frozenset[str]:
+    """The tags of findings the node's fix loop declined to act on at `head_sha`.
+
+    A `judge_verdict` of the node's current run whose verdict is `stop_downgrade`
+    on a measurement that ended early (`ended_early`) holds for the commit it
+    names: those findings are not collected, fixed or judged again on it, the
+    re-measure after `on_failure` included. Empty without a head."""
+    if head_sha is None:
+        return frozenset()
+
+    def read(c):
+        start = ci_reruns.node_run_start(c, work_item_id, node_id)
+        return list(events.read_after(c, start, work_item_id))
+
+    tags: set[str] = set()
+    for e in db.read(read):
+        p = e["payload"]
+        if (
+            e["type"] == ChainEvent.JUDGE_VERDICT
+            and p.get("node_id") == node_id
+            and p.get("verdict") == "stop_downgrade"
+            and p.get("ended_early")
+            and p.get("head_sha") == head_sha
+        ):
+            tags.update(_findings.from_payload(f).fingerprint for f in p.get("findings", []))
+    return frozenset(tags)
+
+
 def last_measurement(
     db, work_item_id: str, node_id: str
 ) -> tuple[list[_findings.Finding] | None, bool, str | None]:
@@ -3469,13 +3632,29 @@ def last_measurement(
     same fingerprints and the loop would escalate straight back to needs_human
     without ever giving the steered retry a chance to run.
     """
+    event, fix_seen = last_measured(db, work_item_id, node_id)
+    if event is None:
+        return None, False, None
+    return (
+        [_findings.from_payload(f) for f in event["payload"].get("findings", [])],
+        fix_seen,
+        event["payload"].get("head_sha"),
+    )
+
+
+def last_measured(
+    db, work_item_id: str, node_id: str, *, before: int | None = None
+) -> tuple[dict | None, bool]:
+    """The node's newest `findings_measured` event with `seq < before` (any, by
+    default), whole, and whether an unrefunded `fix_cycle_started` followed it
+    below `before`. `last_measurement` is this, read as findings."""
     evts = db.read(lambda c: events.read_after(c, 0, work_item_id))
     fix_seen = False
     # A cycle that started and was refunded (`fix_cycle_refunded`, Kraft-jdkoq)
     # never repaired anything, so it is not a fix having run.
     refunded: set[int] = set()
     for e in reversed(evts):
-        if e["payload"].get("node_id") != node_id:
+        if (before is not None and e["seq"] >= before) or e["payload"].get("node_id") != node_id:
             continue
         if e["type"] == ChainEvent.FIX_CYCLE_REFUNDED:
             refunded.add(e["payload"].get("cycle"))
@@ -3484,12 +3663,8 @@ def last_measurement(
         ):
             fix_seen = True
         elif e["type"] == ChainEvent.FINDINGS_MEASURED:
-            return (
-                [_findings.from_payload(f) for f in e["payload"].get("findings", [])],
-                fix_seen,
-                e["payload"].get("head_sha"),
-            )
-    return None, False, None
+            return e, fix_seen
+    return None, False
 
 
 #: The escalation hook's own `hook_point`. Not a node task and not dispatched
@@ -3552,7 +3727,7 @@ def judge_history(
     #: `evts`, when given, is a timeline the caller already fetched -- the same
     #: shape `escalate._reason` accepts. Read fresh when nothing is handed in,
     #: which is every existing caller including the judge's own.
-    measured: list[tuple[int, list[_findings.Finding]]] = []
+    measured: list[tuple[int, list[_findings.Finding], list[_findings.Finding]]] = []
     for e in evts if evts is not None else db.read(lambda c: events.read_after(c, 0, work_item_id)):
         if e["type"] == ChainEvent.FINDINGS_MEASURED and e["payload"].get("node_id") == node_id:
             cycle = e["payload"]["cycle"]
@@ -3564,6 +3739,12 @@ def judge_history(
                     [
                         _findings.from_payload(f)
                         for f in e["payload"].get("findings", [])
+                        if f.get("severity") in loop_severities
+                    ],
+                    # What an early end did not re-read that round (`unmeasured_findings`).
+                    [
+                        _findings.from_payload(f)
+                        for f in e["payload"].get("unmeasured", [])
                         if f.get("severity") in loop_severities
                     ],
                 )
@@ -3588,8 +3769,13 @@ def judge_history(
     # re-entries, so unlike the measurements these are collision-free.
     fix_by_round = {r["round"]: r["result_path"] for r in fix_rows}
     return [
-        {"round": i, "findings": found, "fix_result_path": fix_by_round.get(cycle)}
-        for i, (cycle, found) in enumerate(measured)
+        {
+            "round": i,
+            "findings": found,
+            "unmeasured": unread,
+            "fix_result_path": fix_by_round.get(cycle),
+        }
+        for i, (cycle, found, unread) in enumerate(measured)
     ]
 
 
@@ -3609,11 +3795,18 @@ def stuck_fingerprint(history: list[dict], min_repeats: int) -> str | None:
     and must not count as "no progress".
     """
     streaks: dict[str, int] = {}
+    prints: set[str] = set()
     for round_ in history:
         prints = {f.fingerprint for f in round_["findings"]}
         fix_ran = round_["fix_result_path"] is not None
+        # A finding nobody re-read this round (an early end skipped its task) holds
+        # its streak: it neither extends nor resets it.
+        held = {f.fingerprint for f in round_.get("unmeasured", [])} - prints
+        kept = {fp: streaks[fp] for fp in held if fp in streaks}
         streaks = {fp: streaks.get(fp, 0) + 1 if fix_ran and fp in streaks else 1 for fp in prints}
-    return next((fp for fp, n in streaks.items() if n >= min_repeats), None)
+        streaks.update(kept)
+    # Only what the latest round actually read: an unread finding is never stuck.
+    return next((fp for fp, n in streaks.items() if n >= min_repeats and fp in prints), None)
 
 
 def deferred_findings(db, work_item_id: str, loop_severities: frozenset[str]) -> list[dict]:
@@ -3662,9 +3855,13 @@ def regressed_fingerprints(history: list[dict]) -> list[str]:
     """
     if len(history) < 3:
         return []
-    per_round = [{f.fingerprint for f in r["findings"]} for r in history]
+    # A round holds a tag it read or carried unread: a gap where nobody re-read it
+    # is not a fix.
+    per_round = [
+        {f.fingerprint for f in (*r["findings"], *r.get("unmeasured", []))} for r in history
+    ]
     out = []
-    for fp in sorted(per_round[-1]):
+    for fp in sorted({f.fingerprint for f in history[-1]["findings"]}):
         seen = [i for i, prints in enumerate(per_round) if fp in prints]
         if len(seen) < 2 or seen[-1] - seen[0] == len(seen) - 1:
             continue  # never absent in between: persistent, not regressed

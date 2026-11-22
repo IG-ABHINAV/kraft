@@ -259,19 +259,19 @@
       "nodes": null,
       "unforked": null,
       "tasks": [
-       "merge_request_feedback.ci.await_ci",
        "merge_request_feedback.automated_review.await_review",
-       "merge_request_feedback.review_feedback.triage"
+       "merge_request_feedback.review_feedback.triage",
+       "merge_request_feedback.ci.await_ci"
       ],
       "steps": [
-       [
-        "merge_request_feedback.ci.await_ci"
-       ],
        [
         "merge_request_feedback.automated_review.await_review"
        ],
        [
         "merge_request_feedback.review_feedback.triage"
+       ],
+       [
+        "merge_request_feedback.ci.await_ci"
        ]
       ],
       "gate_after": null,
@@ -803,7 +803,8 @@
         "fallback": null,
         "outputs": null
        },
-       "max_attempts": 2
+       "max_attempts": 2,
+       "early": false
       },
       "escalation": null,
       "on_base_changed": null,
@@ -970,8 +971,7 @@
           "kind": "forge",
           "target": "mr.open_draft",
           "wait": null,
-          "reviewers": null,
-          "pipeline": null
+          "config": null
          }
         ],
         "on_failure": null,
@@ -999,48 +999,6 @@
       "tasks": null,
       "steps": [
        {
-        "id": "ci",
-        "tasks": [
-         {
-          "id": "await_ci",
-          "scope": "each_repository",
-          "steering": [],
-          "on_failure": null,
-          "policy": {
-           "allowed_harnesses": null,
-           "token_budget": null,
-           "budget_usd": null,
-           "allowed_tools": null,
-           "deny_tools": null,
-           "grants": null,
-           "sandbox": null,
-           "time_cap_minutes": null,
-           "total_time_cap_minutes": 90
-          },
-          "skippable": true,
-          "icon": null,
-          "reads": [],
-          "kind": "forge",
-          "target": "mr.ci",
-          "wait": {
-           "polling": {
-            "initial_interval": "30s",
-            "max_interval": "5m"
-           },
-           "grace_period": null
-          },
-          "reviewers": null,
-          "pipeline": null
-         }
-        ],
-        "on_failure": null,
-        "policy": null,
-        "skippable": true,
-        "read_only": false,
-        "icon": null,
-        "runner": null
-       },
-       {
         "id": "automated_review",
         "tasks": [
          {
@@ -1057,7 +1015,7 @@
            "grants": null,
            "sandbox": null,
            "time_cap_minutes": null,
-           "total_time_cap_minutes": 30
+           "total_time_cap_minutes": 10
           },
           "skippable": true,
           "icon": null,
@@ -1068,11 +1026,13 @@
            "polling": {
             "initial_interval": "30s",
             "max_interval": "5m"
-           },
-           "grace_period": "1m"
+           }
           },
-          "reviewers": null,
-          "pipeline": null
+          "config": {
+           "reviewers": null,
+           "watch_ci": true,
+           "grace_period": "1m"
+          }
          }
         ],
         "on_failure": null,
@@ -1115,6 +1075,46 @@
         "policy": null,
         "skippable": true,
         "read_only": true,
+        "icon": null,
+        "runner": null
+       },
+       {
+        "id": "ci",
+        "tasks": [
+         {
+          "id": "await_ci",
+          "scope": "each_repository",
+          "steering": [],
+          "on_failure": null,
+          "policy": {
+           "allowed_harnesses": null,
+           "token_budget": null,
+           "budget_usd": null,
+           "allowed_tools": null,
+           "deny_tools": null,
+           "grants": null,
+           "sandbox": null,
+           "time_cap_minutes": null,
+           "total_time_cap_minutes": 90
+          },
+          "skippable": true,
+          "icon": null,
+          "reads": [],
+          "kind": "forge",
+          "target": "mr.ci",
+          "wait": {
+           "polling": {
+            "initial_interval": "30s",
+            "max_interval": "5m"
+           }
+          },
+          "config": null
+         }
+        ],
+        "on_failure": null,
+        "policy": null,
+        "skippable": true,
+        "read_only": false,
         "icon": null,
         "runner": null
        }
@@ -1173,8 +1173,7 @@
            "kind": "forge",
            "target": "mr.sync",
            "wait": null,
-           "reviewers": null,
-           "pipeline": null
+           "config": null
           }
          ],
          "on_failure": null,
@@ -1239,8 +1238,7 @@
            "kind": "forge",
            "target": "mr.sync",
            "wait": null,
-           "reviewers": null,
-           "pipeline": null
+           "config": null
           }
          ],
          "on_failure": null,
@@ -1274,7 +1272,8 @@
         "fallback": null,
         "outputs": null
        },
-       "max_attempts": 3
+       "max_attempts": 3,
+       "early": true
       },
       "escalation": null,
       "on_base_changed": {
@@ -1377,8 +1376,7 @@
         "kind": "forge",
         "target": "mr.mark_ready",
         "wait": null,
-        "reviewers": null,
-        "pipeline": null
+        "config": null
        }
       ],
       "steps": null,
@@ -1422,11 +1420,9 @@
          "polling": {
           "initial_interval": "5m",
           "max_interval": "1h"
-         },
-         "grace_period": null
+         }
         },
-        "reviewers": null,
-        "pipeline": null
+        "config": null
        }
       ],
       "steps": null,
@@ -1457,8 +1453,7 @@
         "kind": "forge",
         "target": "mr.merge",
         "wait": null,
-        "reviewers": null,
-        "pipeline": null
+        "config": null
        }
       ],
       "steps": null,
@@ -1533,11 +1528,9 @@
          "polling": {
           "initial_interval": "30s",
           "max_interval": "5m"
-         },
-         "grace_period": null
+         }
         },
-        "reviewers": null,
-        "pipeline": null
+        "config": null
        }
       ],
       "steps": null,

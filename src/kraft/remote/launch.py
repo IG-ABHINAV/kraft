@@ -200,6 +200,26 @@ class Placement:
             )
             if verdict.group_held:
                 self.wait = verdict.wait
+        if (
+            self._concurrency_group
+            and local_ok
+            and not self.wait.startswith("waiting for test group ")
+        ):
+            # The group is held only by the local worker: the remote verdict above cannot
+            # say so, and "waiting for a machine" names neither the group nor its holder.
+            # Only when the step may run there: a local worker outside the runner group
+            # cannot be what it waits for (it holds another scope of the same group).
+            if link is not None and (
+                holder := link.group_holder(self._concurrency_group, self._key)
+            ):
+                try:
+                    item = ids.parse_session_ref(holder)[0] or holder
+                except ValueError:  # a key that is not `<item>/<session>`: name it as it is
+                    item = holder
+                self.wait = (
+                    f"waiting for test group {self._concurrency_group}: "
+                    f"{item} is running it on local"
+                )
         return False
 
     def _mounts(self) -> list[str]:

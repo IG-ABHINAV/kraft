@@ -331,6 +331,12 @@ def parse_json(raw: str, what: str):
         raise ForgeError(f"{what} did not return JSON: {raw[:200]!r}") from exc
 
 
+#: Pages of 100 a bot read takes of each list: 3,000 rows of each list a bot-heavy
+#: merge request might hold. Past it the read raises (`strict`) rather than reading a
+#: truncated list as whole, which stops the wait where it once lost the newest rows.
+BOT_PAGES = 30
+
+
 class CliWaits:
     """The two external-wait reads `gh` and `glab` answer the same way. A
     mixin rather than a function because `FakeForge` answers both from a
@@ -360,7 +366,7 @@ class CliWaits:
         for r in reviewers:
             try:
                 results.append(
-                    await self._bot_review(repo, branch, r.bot)
+                    await self._bot_review(repo, branch, r.bot, replies=r.replies)
                     if r.bot is not None
                     else await self._check_review(repo, branch, r.check)
                 )

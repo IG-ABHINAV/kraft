@@ -186,7 +186,7 @@ components:
 
 # Design System: Kraft marketing site
 
-<!-- Scope: the marketing pages in docsite/ (/, /how-it-works, /tour, /customize, /scale, /why). The docs pages keep Docus's look, and the web app's own system is frontend/src/ng/theme/theme.css. Source: the approved boards at https://claude.ai/artifact/1Cniz5ThNsGVeGSyWjFPjH and the Phase 5 build brief. -->
+<!-- Scope: the marketing pages in docsite/ (/, /how-it-works, /tour, /customize, /scale, /why) and the blog (/blog, its posts in docsite/blog/). The docs pages keep Docus's look, and the web app's own system is frontend/src/ng/theme/theme.css. Source: the approved boards at https://claude.ai/artifact/1Cniz5ThNsGVeGSyWjFPjH and the Phase 5 build brief. -->
 
 ## Overview
 
@@ -227,8 +227,8 @@ A cool ink-and-violet ground with two signal colours that each carry one meaning
 - **Card** (`card-*`): the two "Yours to shape and scale" cards, the secondary button's fill, the selected segment of the theme switch.
 - **Raised** (`raised-*`): the inside of the current gate diamond.
 - **Hairline** (`hairline-*`): rules between list items, panel headers and section edges.
-- **Border** (`border-*`): outlines inside drawings (a scope box, a machine lane).
-- **Stroke** (`stroke-*`): every line in a drawing and the dashed outline of a node still to come.
+- **Border** (`border-*`): outlines inside drawings (a machine lane).
+- **Stroke** (`stroke-*`): every line in a drawing, the boxes of the scope nest and the dashed outline of a node still to come.
 - **Control Outline** (`control-outline-*`): the secondary button's and the theme switch's outline. Darker than the boards' stroke so it reaches 3:1 on every ground it meets, the amber wash included.
 - **Text** (`text-*`), **Secondary Text** (`text-sub-*`), **Muted Text** (`text-muted-*`): headings and current items; body copy and footer links; labels, captions and file paths.
 - **Glyph To-do** (`glyph-todo-*`): the icon inside a node still to come. Decorative only, never text.
@@ -290,7 +290,7 @@ Gently rounded and never pill-shaped. Controls take 10px, inner panels and list 
 
 ## Components
 
-Quiet and exact: flat fills, hairlines and exact corners, no gloss and no motion that isn't the hero diagram's.
+Quiet and exact: flat fills, hairlines and exact corners, no gloss and no motion that isn't the hero diagram's or the chains editing demo's.
 
 ### Buttons
 - **Shape:** gently rounded (10px).
@@ -305,20 +305,28 @@ Quiet and exact: flat fills, hairlines and exact corners, no gloss and no motion
 - **Shadow Strategy:** none (see Elevation).
 
 ### Navigation
-- **Header:** 88px tall on the violet field with a violet-rule bottom edge: the wordmark (20px, 600), then Product (a disclosure), Why Kraft, Docs and GitHub at 17px and 500 in `on-violet-nav`, then a small primary Install button, 32px apart. On a phone, 64px tall: wordmark, Install and a 44px menu button.
+- **Header:** 88px tall on the violet field with a violet-rule bottom edge: the wordmark (20px, 600), then Product (a disclosure), Why Kraft, Docs, Blog and GitHub at 17px and 500 in `on-violet-nav`, then a small primary Install button, 32px apart. On a phone, 64px tall: wordmark, Install and a 44px menu button.
 - **Product menu:** a 560px two-column list on the band colour with a violet-rule border, 16px corners and 12px padding; each entry a 17px page name over a 15px line, 12px corners. Escape and a click outside close it, and focus returns to the button.
-- **Phone menu:** a full-height sheet on the violet field: a "PRODUCT" label over the four entries (20px names with their lines), then Why Kraft, Docs and GitHub, with Install and Try the live demo pinned to the bottom.
-- **Footer:** on the band colour with a hairline top: the wordmark and its meaning, the theme switch, and three link columns (Product, Docs, Project) with 12px monospace heads and 15px links, each 44px tall.
+- **Phone menu:** a full-height sheet on the violet field: a "PRODUCT" label over the four entries (20px names with their lines), then Why Kraft, Docs, Blog and GitHub, with Install and Try the live demo pinned to the bottom.
+- **Footer:** on the band colour with a hairline top: the wordmark and its meaning, the theme switch, and three link columns (Product, Docs, Project; Blog under Product) with 12px monospace heads and 15px links, each 44px tall.
 - **Theme switch:** a radio group labelled "Theme" with System, Light and Dark, 44px segments in a 10px control-outline frame; the checked segment takes the card fill and 600.
 
 ### Hero diagram (signature)
 One work item on the default chain, drawn on the ground colour inside a 16px card: a header with the item's name and a monospace kind line, a pause button, then the "You" lane in amber wash above the steps with each gate's question over its diamond, the step glyphs on one line, and each step's actor and name below. Done steps are solid outlines, steps to come are dashed. Under it the gate panel, in amber wash, asks the current question with Approve and Request changes. On a phone the track stays one horizontal line and only the current step is spelled out, in a panel of fixed height below it.
+
+### Chains editing demo (Make it yours)
+Block 01 of Make it yours replaces a screenshot with the Chains screen editing `with-lint` beside the YAML file it writes: two edits (an override, an added node), then an upstream change, where `default.yaml` changes, the inherited node shows the new value and `with-lint.yaml` stays as it was, then a Review & publish summary that still counts two changes. The loop runs 20 to 25 seconds. The crop is the app's own dark look, canvas only, on the violet frame (16px corners, 12px padding, 10px inner panels), and stays dark in both themes; the file is a code panel on the same frame. Under the frame sit a caption, three step buttons and a pause button in the site's tokens. Each edit shows on the canvas first and the file follows about 400ms later: views crossfade in 240ms, a node slides in over 450ms, menus and cards rise 6px as they fade in, all on `cubic-bezier(0.16, 1, 0.3, 1)`, and the loop's reset is a cut, not a slide back. It follows the hero diagram's motion rules: it starts when in view, holds under a hovering mouse or keyboard focus (never focus on its own buttons), and under reduced motion opens paused on the review, moves only on a button, and keeps only 150ms fades. The crop is hidden from a screen reader, which gets the file and the caption. From 1100px it is the crop beside the file; under that, the caption and buttons, then the chain's track above the file, which grows below them.
 
 ### Code panel
 A 12px band-coloured panel with a hairline: a monospace file path as its header, then the file at 13px with 1.6 line height. One line or group may be highlighted in amber line, with an amber diamond in the gutter beside a gate's id.
 
 ### Drawings
 The fix loop, the scope nest, the worktrees, slices and the two machine lanes, each in a 16px band-coloured panel with 28px padding and a 15px muted caption below. All are SVG built from the two glyphs, the diamond, 2px strokes and 12px monospace labels, each with a text alternative that says what it shows.
+
+Why Kraft's head draws a session beside a chain in the same parts, on a dark panel on the violet field. The heads of Make it yours (the config folder as a file list) and Scale up (slices as progress strips, a step moved to another machine) are HTML text, not SVG, so they stay readable on a phone; a word beside each strip says its state, and the strips are hidden from a screen reader. Product tour's head is three screenshot crops. These three heads align their text and picture at the top; How it works and Why Kraft centre them.
+
+### Blog
+`/blog` and each post take a capability page's head on the violet field, but only as tall as its text: a reader came for the post. Under it, one 720px column on the ground. The index lists posts newest first, each a monospace meta line (date, author, tags, 13px capitals in muted text), a 22 to 28px title link and its description, with hairlines between. A post's body is the docs' prose components in the site's face, 17px at 1.7, headings in Inter, links in the accent. A post's cover image is its share card only; the page doesn't repeat it above the body.
 
 ### Install band
 On the violet field: "Install Kraft." at 56px, then the command in a band-coloured 16px container with a Copy button that says it copied in words, then the next steps and requirements in on-violet text, then a row of arrow links.

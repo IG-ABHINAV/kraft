@@ -20,6 +20,8 @@ from kraft.adapters.forge.models import (
     DropCause,
     FailedJob,
     ForgeError,
+    ForgeNote,
+    ForgeThread,
     HeadMoved,
     Job,
     Label,
@@ -27,11 +29,13 @@ from kraft.adapters.forge.models import (
     MRDetails,
     MRRef,
     Pipeline,
+    Posted,
     QueueRead,
     QueueState,
     ReviewerFeedback,
     ReviewResult,
 )
+from kraft.adapters.forge.replies import facts
 from kraft.adapters.forge.transport import CliTransport, Field, Transport
 from kraft.automated_review import Reviewers
 
@@ -61,15 +65,88 @@ _GH_SETTLED_OK = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 _GH_NOTHING_RAN = frozenset({"SKIPPED", "NEUTRAL", "STALE"})
 
 
+def _str_or_none(v: object) -> str | None:
+    return None if v is None else str(v)
+
+
+def _gh_notes(nodes: list[dict]) -> tuple[ForgeNote, ...]:
+    """A thread's comments as notes, a pending one left out: a draft nobody else
+    can see yet, which the collection and `read_thread` both skip."""
+    return tuple(
+        ForgeNote(
+            id=str(n.get("id") or ""),
+            rest_id=str(n.get("fullDatabaseId") or ""),
+            author=str((n.get("author") or {}).get("login") or ""),
+            author_type=(n.get("author") or {}).get("__typename"),
+            body=n.get("body") or "",
+            created_at=n.get("createdAt") or "",
+            updated_at=n.get("updatedAt") or "",
+            reply_to=(n.get("replyTo") or {}).get("id"),
+            review_id=_str_or_none((n.get("pullRequestReview") or {}).get("fullDatabaseId")),
+        )
+        for n in nodes
+        if n.get("state") != "PENDING"
+    )
+
+
+_VIEWER_QUERY = "query { viewer { login } }"
+_RESOLVE_MUTATION = """
+mutation($thread: ID!) {
+  resolveReviewThread(input: {threadId: $thread}) { thread { isResolved } }
+}
+"""
+
+
+def _gh_thread(node: dict, comments: list[dict]) -> ForgeThread:
+    first = comments[0] if comments else {}
+    return ForgeThread(
+        id=str(node["id"]),
+        mr=int((node.get("pullRequest") or {}).get("number") or 0),
+        resolved=bool(node.get("isResolved")),
+        outdated=bool(node.get("isOutdated")),
+        can_reply=bool(node.get("viewerCanReply")),
+        can_resolve=bool(node.get("viewerCanResolve")),
+        file=first.get("path"),
+        line=first.get("line") or first.get("originalLine"),
+        notes=_gh_notes(comments),
+    )
+
+
+def _posted(answer: dict, *ids: str) -> Posted:
+    """A write's answer as `Posted`: the REST id and the node id on GitHub."""
+    return Posted(
+        tuple(str(answer[k]) for k in ids),
+        str(answer.get("created_at") or ""),
+        answer.get("body") or "",
+    )
+
+
 def _bot_feedback(
-    reviewer, comments: list[dict], reviews: list[dict], threads: list[dict], head: str, since
+    reviewer,
+    comments: list[dict],
+    reviews: list[dict],
+    threads: list[dict],
+    head: str,
+    since,
+    kraft: facts.Kraft | None = None,
 ) -> ReviewerFeedback:
-    """One bot's part of the pull request's comments, reviews and threads."""
+    """One bot's part of the pull request's comments, reviews and threads. Given
+    `kraft`, Kraft's conversation in a thread is not the bot reviewing the push."""
     bot = reviewer.bot
 
     def mine(login: object) -> bool:
         return mr_ops.same_login(str(login or ""), bot)
 
+    # No note of a thread Kraft has posted in is activity or a summary, and neither
+    # is a review made only of replies in such threads (each reply on GitHub comes
+    # wrapped in one): the bot's own review that opened the thread still counts.
+    noted = [(t, _gh_notes((t.get("comments") or {}).get("nodes") or [])) for t in threads]
+    talk = {t["id"] for t, ns in noted if kraft is not None and kraft.talks_in(ns)}
+    replies_ = {n.review_id for t, ns in noted if t["id"] in talk for n in ns if n.reply_to}
+    elsewhere = {
+        n.review_id for t, ns in noted for n in ns if t["id"] not in talk or not n.reply_to
+    }
+    reply_only = replies_ - elsewhere - {None}
     summaries: list[dict] = []
     seen: list[datetime | None] = []
     for c in comments:
@@ -92,6 +169,14 @@ def _bot_feedback(
             "PENDING",
             "DISMISSED",
         ):
+            # Only the blank `COMMENTED` review a reply comes wrapped in: a verdict
+            # is never the conversation.
+            if (
+                r.get("state") == "COMMENTED"
+                and str(r.get("id")) in reply_only
+                and not str(r.get("body") or "").strip()
+            ):
+                continue
             at = mr_ops.forge_time(r.get("submitted_at"))
             seen.append(at)
             if r.get("commit_id") == head and at is not None and at > since:
@@ -106,11 +191,12 @@ def _bot_feedback(
     open_threads: list[dict] = []
     for t in threads:
         notes = (t.get("comments") or {}).get("nodes") or []
-        seen += [
-            mr_ops.forge_time(n.get("updatedAt"))
-            for n in notes
-            if mine((n.get("author") or {}).get("login"))
-        ]
+        if t["id"] not in talk:
+            seen += [
+                mr_ops.forge_time(n.get("updatedAt"))
+                for n in notes
+                if mine((n.get("author") or {}).get("login"))
+            ]
         if notes and mine((notes[0].get("author") or {}).get("login")) and not t.get("isResolved"):
             first = notes[0]
             body = "\n".join(
@@ -128,6 +214,7 @@ def _bot_feedback(
                     "file": first.get("path"),
                     "line": first.get("line") or first.get("originalLine"),
                     "body": body,
+                    "notes": _gh_notes(notes),
                 }
             )
     return ReviewerFeedback(reviewer, mr_ops.newest(seen), tuple(summaries), tuple(open_threads))
@@ -207,24 +294,43 @@ query($owner: String!, $name: String!, $n: Int!) {
   }
 }
 """
+#: The fields every review comment is read with (`_gh_notes`).
+_NOTE_FIELDS = (
+    "id fullDatabaseId author { __typename login } body path line originalLine "
+    "createdAt updatedAt state replyTo { id } pullRequestReview { fullDatabaseId }"
+)
 #: A pull request's review threads, with each one's comments: what
 #: `reviewer_feedback` reads, since REST review comments carry no resolved flag.
-_THREADS_QUERY = """
-query($owner: String!, $name: String!, $n: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $n) {
-      reviewThreads(first: 100) {
-        nodes {
-          id
-          isResolved
-          comments(first: 100) {
-            nodes { author { login } body path line originalLine updatedAt }
-          }
-        }
-      }
-    }
-  }
-}
+_THREADS_QUERY = f"""
+query($owner: String!, $name: String!, $n: Int!, $after: String) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequest(number: $n) {{
+      reviewThreads(first: 100, after: $after) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{
+          id isResolved isOutdated viewerCanReply viewerCanResolve
+          comments(first: 100) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {_NOTE_FIELDS} }} }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+#: One review thread, and a page of its comments: `read_thread`, and the rest of a
+#: thread with more than 100 comments. Not scoped to a pull request (`node`), so a
+#: caller checks `pullRequest.number`.
+_THREAD_QUERY = f"""
+query($thread: ID!, $after: String) {{
+  node(id: $thread) {{
+    ... on PullRequestReviewThread {{
+      id isResolved isOutdated viewerCanReply viewerCanResolve
+      pullRequest {{ number }}
+      comments(first: 100, after: $after) {{
+        pageInfo {{ hasNextPage endCursor }} nodes {{ {_NOTE_FIELDS} }}
+      }}
+    }}
+  }}
+}}
 """
 _READY_MUTATION = """
 mutation($id: ID!) {
@@ -593,16 +699,20 @@ class GhCli(mr_ops.CliWaits):
         selects those instead (no rollup)."""
         return await gq.read_pr(self._transport(repo), repo, target, checks=checks, fields=fields)
 
-    async def _bot_review(self, repo: Path, branch: str, bot: str) -> ReviewResult:
+    async def _bot_review(
+        self, repo: Path, branch: str, bot: str, *, replies: bool = False
+    ) -> ReviewResult:
         """`bot`'s latest review of the PR's current head, dismissed ones
         skipped: pending until there is one. Changes requested, or any inline comment, is actionable
-        -- one finding per comment; anything else is clean."""
+        -- one finding per comment; anything else is clean. With `replies`, a blank
+        `COMMENTED` review whose comments all answer another is the bot answering a
+        thread, not its review of the head: the one before it stands."""
         pr = await self._pr(repo, mr_ops.target(0, branch), checks=False)
         number, head = pr["number"], pr["headRefOid"]
-        # ponytail: one page of 100 reviews -- paginate if a PR ever has more.
-        reviews = await self._api(
-            repo, f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews", fields={"per_page": 100}
-        )
+        reviews = await self._paged(
+            repo, f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews", pages=mr_ops.BOT_PAGES,
+            strict=True,
+        )  # fmt: skip
         mine = [
             r
             for r in reviews
@@ -613,14 +723,24 @@ class GhCli(mr_ops.CliWaits):
             # counts, so the bot's latest other review of this head stands.
             and r.get("state") not in ("PENDING", "DISMISSED")
         ]
-        if not mine:
+        for last in reversed(mine):
+            comments = await self._paged(
+                repo,
+                f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews/{last['id']}/comments",
+                pages=mr_ops.BOT_PAGES,
+                strict=True,
+            )
+            talk = (
+                replies
+                and comments
+                and last.get("state") == "COMMENTED"
+                and not str(last.get("body") or "").strip()
+                and all(c.get("in_reply_to_id") for c in comments)
+            )
+            if not talk:
+                break
+        else:
             return ReviewResult("pending", detail=f"waiting for {bot} to review {head[:7]}")
-        last = mine[-1]
-        comments = await self._api(
-            repo,
-            f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews/{last['id']}/comments",
-            fields={"per_page": 100},
-        )
         findings = tuple(
             f"{c.get('path')}:{c.get('line') or c.get('original_line')}: {c.get('body', '')}"
             for c in comments
@@ -632,37 +752,167 @@ class GhCli(mr_ops.CliWaits):
         return ReviewResult("clean", detail=f"{bot}: {last.get('state')}")
 
     async def reviewer_feedback(
-        self, *, repo: Path, branch: str, reviewers: Reviewers, since: datetime
+        self,
+        *,
+        repo: Path,
+        branch: str,
+        reviewers: Reviewers,
+        since: datetime,
+        kraft: facts.Kraft | None = None,
     ) -> list[ReviewerFeedback]:
         """What each of `reviewers` has said on the pull request, in order. The
         pull request, and for the bots its comments, reviews and threads, are
-        read once however many reviewers there are."""
+        read once however many reviewers there are. `kraft` leaves Kraft's
+        conversation out of the bots' activity (`_bot_feedback`)."""
         pr = await self._pr(repo, mr_ops.target(0, branch), checks=False)
         number, head = pr["number"], pr["headRefOid"]
         comments = reviews = threads = []
         if any(r.bot is not None for r in reviewers):
-            # ponytail: one page of 100 of each -- paginate if a PR ever has more.
-            comments = await self._api(
-                repo, f"repos/{{owner}}/{{repo}}/issues/{number}/comments", fields={"per_page": 100}
+            comments = await self._paged(
+                repo,
+                f"repos/{{owner}}/{{repo}}/issues/{number}/comments",
+                pages=mr_ops.BOT_PAGES,
+                strict=True,
             )
-            reviews = await self._api(
-                repo, f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews", fields={"per_page": 100}
+            reviews = await self._paged(
+                repo,
+                f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews",
+                pages=mr_ops.BOT_PAGES,
+                strict=True,
             )
-            data = await self._gql(
-                repo, _THREADS_QUERY, {"owner": "{owner}", "name": "{repo}", "n": number}
-            )
-            try:
-                threads = data["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-            except (KeyError, TypeError) as exc:
-                raise ForgeError(
-                    f"gh api graphql answered without the review threads: {data!r:.200}"
-                ) from exc
+            threads = await self._threads(repo, number)
         return [
-            _bot_feedback(r, comments, reviews, threads, head, since)
+            _bot_feedback(r, comments, reviews, threads, head, since, kraft)
             if r.bot is not None
             else ReviewerFeedback(r, None, check=await self._check_feedback(repo, head, r.check))
             for r in reviewers
         ]
+
+    async def viewer(self, *, repo: Path) -> str:
+        data = await self._gql(repo, _VIEWER_QUERY, {})
+        login = (data.get("viewer") or {}).get("login") if isinstance(data, dict) else None
+        if not login:
+            raise ForgeError(f"gh api graphql answered without the viewer: {data!r:.200}")
+        return str(login)
+
+    async def read_thread(self, *, repo: Path, branch: str, thread_id: str) -> ForgeThread | None:
+        pr = await self._pr(repo, mr_ops.target(0, branch), checks=False)
+        node, comments = await self._thread_comments(repo, thread_id, None)
+        # `node` is not scoped to a pull request: another one's thread is not this one's.
+        if not node.get("id") or (node.get("pullRequest") or {}).get("number") != pr["number"]:
+            return None
+        return _gh_thread(node, comments)
+
+    async def reply_to_thread(self, *, repo: Path, thread: ForgeThread, body: str) -> Posted:
+        if not thread.notes:
+            raise ForgeError(f"thread {thread.id} has no note to reply to")
+        # A reply goes to the first comment's REST id. The body is a `str` field, so it
+        # is always sent raw (`-f`), whatever it starts with.
+        answer = await self._api(
+            repo,
+            f"repos/{{owner}}/{{repo}}/pulls/{thread.mr}/comments/{thread.notes[0].rest_id}/replies",
+            method="POST",
+            fields={"body": body},
+        )
+        return _posted(answer, "id", "node_id")
+
+    async def resolve_thread(self, *, repo: Path, thread: ForgeThread) -> None:
+        await self._gql(repo, _RESOLVE_MUTATION, {"thread": thread.id})
+
+    async def mr_comments(self, *, repo: Path, branch: str) -> tuple[ForgeNote, ...]:
+        pr = await self._pr(repo, mr_ops.target(0, branch), checks=False)
+        rows = await self._paged(
+            repo,
+            f"repos/{{owner}}/{{repo}}/issues/{pr['number']}/comments",
+            pages=mr_ops.BOT_PAGES,
+            strict=True,
+        )
+        return tuple(
+            ForgeNote(
+                id=str(r.get("node_id") or ""),
+                rest_id=str(r.get("id") or ""),
+                author=str((r.get("user") or {}).get("login") or ""),
+                author_type=(r.get("user") or {}).get("type"),
+                body=r.get("body") or "",
+                created_at=r.get("created_at") or "",
+                updated_at=r.get("updated_at") or "",
+            )
+            for r in rows
+        )
+
+    async def upsert_comment(
+        self, *, repo: Path, branch: str, note_id: str | None, body: str
+    ) -> Posted:
+        if note_id is None:
+            pr = await self._pr(repo, mr_ops.target(0, branch), checks=False)
+            path, method = f"repos/{{owner}}/{{repo}}/issues/{pr['number']}/comments", "POST"
+        else:
+            path, method = f"repos/{{owner}}/{{repo}}/issues/comments/{note_id}", "PATCH"
+        answer = await self._api(repo, path, method=method, fields={"body": body})
+        return _posted(answer, "id", "node_id")
+
+    async def delete_note(
+        self, *, repo: Path, branch: str, note: ForgeNote, in_thread: bool
+    ) -> None:
+        kind = "pulls" if in_thread else "issues"
+        await self._send(
+            repo, f"repos/{{owner}}/{{repo}}/{kind}/comments/{note.rest_id}", method="DELETE"
+        )
+
+    async def _threads(self, repo: Path, number: int) -> list[dict]:
+        """Every review thread of the pull request, each with every comment: the
+        threads by cursor, then each thread's own comments by cursor."""
+        out: list[dict] = []
+        variables: dict[str, str | int | bool] = {"owner": "{owner}", "name": "{repo}", "n": number}
+        for _ in range(mr_ops.BOT_PAGES):
+            data = await self._gql(repo, _THREADS_QUERY, variables)
+            try:
+                page = data["repository"]["pullRequest"]["reviewThreads"]
+                out += page.get("nodes") or []
+            except (KeyError, TypeError, AttributeError) as exc:
+                raise ForgeError(
+                    f"gh api graphql answered without the review threads: {data!r:.200}"
+                ) from exc
+            info = page.get("pageInfo") or {}
+            cursor = info.get("endCursor")
+            if not info.get("hasNextPage") or not cursor or cursor == variables.get("after"):
+                break
+            variables = {**variables, "after": cursor}
+        else:
+            raise ForgeError(f"gh api graphql: more than {mr_ops.BOT_PAGES * 100} review threads")
+        for thread in out:
+            comments = thread.get("comments") or {}
+            info = comments.get("pageInfo") or {}
+            if info.get("hasNextPage"):
+                cursor = info.get("endCursor")
+                _, more = await self._thread_comments(repo, str(thread["id"]), cursor)
+                thread["comments"] = {**comments, "nodes": [*(comments.get("nodes") or []), *more]}
+        return out
+
+    async def _thread_comments(
+        self, repo: Path, thread_id: str, after: str | None
+    ) -> tuple[dict, list[dict]]:
+        """One thread (`_THREAD_QUERY`) and every comment after the cursor `after`
+        (from the start when None): the thread node, and those comments."""
+        node: dict = {}
+        rows: list[dict] = []
+        for _ in range(mr_ops.BOT_PAGES):
+            variables: dict[str, str | int | bool] = {"thread": thread_id}
+            if after:
+                variables["after"] = after
+            data = await self._gql(repo, _THREAD_QUERY, variables)
+            found = data.get("node") if isinstance(data, dict) else None
+            if not found:
+                return {}, rows
+            node = found
+            page = found.get("comments") or {}
+            rows += page.get("nodes") or []
+            info = page.get("pageInfo") or {}
+            cursor = info.get("endCursor")
+            if not info.get("hasNextPage") or not cursor or cursor == after:
+                return node, rows
+            after = cursor
+        raise ForgeError(f"gh api graphql: more than {mr_ops.BOT_PAGES * 100} comments in a thread")
 
     async def _check_feedback(self, repo: Path, head: str, check: str) -> dict:
         """The check run `check` on `head`, or else the commit status of that

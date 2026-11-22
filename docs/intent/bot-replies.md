@@ -1,0 +1,226 @@
+# Intent: replies to the review bots
+
+Kraft reading every note of a review bot's thread, and the forge reads and
+writes, the body gate and the reply record that let it answer a bot in that
+thread without posting twice, leaking a secret or arguing forever.
+
+`enforced-by:` names the test that pins each requirement.
+
+## REQ bot-feedback-reads-every-page
+WHEN the review wait reads what the review bots said, the system SHALL read
+every page of the merge request's comments, reviews, review threads, each
+thread's comments, notes and discussions.
+enforced-by: tests/adapters/forge/test_reviewer_feedback.py::test_every_page_of_bot_feedback_is_read[gh-comments], tests/adapters/forge/test_reviewer_feedback.py::test_every_page_of_bot_feedback_is_read[gh-reviews], tests/adapters/forge/test_reviewer_feedback.py::test_every_page_of_bot_feedback_is_read[gh-threads], tests/adapters/forge/test_reviewer_feedback.py::test_every_page_of_bot_feedback_is_read[gh-thread-comments], tests/adapters/forge/test_reviewer_feedback.py::test_every_page_of_bot_feedback_is_read[glab-notes], tests/adapters/forge/test_reviewer_feedback.py::test_every_page_of_bot_feedback_is_read[glab-discussions]
+origin: src/kraft/adapters/forge/gh.py
+
+## REQ collected-threads-carry-their-notes
+WHEN the review wait writes the collection a triage reads, the system SHALL list
+each thread's notes with their id, author, whose each is, body, creation time,
+the note each answers and the review each was submitted in, SHALL leave out
+GitHub pending comments and GitLab system notes, SHALL keep each thread's id,
+file, line and flattened body as before, and SHALL record when the bots were read.
+enforced-by: tests/adapters/forge/test_reviewer_feedback.py::test_reviewer_feedback_reads[gh-bot], tests/adapters/forge/test_reviewer_feedback.py::test_reviewer_feedback_reads[glab-bot], tests/adapters/forge/test_reviewer_feedback.py::test_reviewer_feedback_reads[gh-pending-left-out-of-notes], tests/adapters/forge/test_reviewer_feedback.py::test_reviewer_feedback_reads[glab-system-note-left-out-of-notes], tests/adapters/forge/test_reviewer_feedback.py::test_reviewer_feedback_reads[gh-a-reply-names-what-it-answers], tests/adapters/forge/test_settle.py::test_each_collected_note_says_whose_it_is, tests/adapters/forge/test_run_review.py::test_the_collect_path_settles_then_hands_on_the_collection[deadline-crossed-between-reads]
+origin: src/kraft/adapters/forge/settle.py
+
+## REQ a-github-bot-note-comes-from-an-app-account
+WHEN Kraft decides whether a note is a configured bot's, the system SHALL
+require, where the forge reports an author type, that the author is an app
+account, whatever its login.
+enforced-by: tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[app-account], tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[github-user-named-like-the-bot], tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[gitlab-login-decides]
+origin: src/kraft/adapters/forge/replies/facts.py
+
+## REQ a-kraft-note-is-the-viewers-and-unedited
+WHEN Kraft decides whether a note is its own, the system SHALL count a note the
+reply record holds as posted only while its body still hashes to what the forge
+returned, and any other note only when the viewer wrote it and it carries a
+reply marker of this work item.
+enforced-by: tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[no-viewer-known], tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[the-viewers-marked-note], tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[a-marker-on-someone-elses-note], tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[another-items-marker], tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[recorded-and-unedited], tests/adapters/forge/replies/test_facts.py::test_whose_a_note_is[recorded-then-edited], tests/adapters/forge/replies/test_facts.py::test_a_marker_is_read_off_the_last_line_and_left_out_of_the_hash[reply], tests/adapters/forge/replies/test_facts.py::test_a_marker_is_read_off_the_last_line_and_left_out_of_the_hash[trailing-newline], tests/adapters/forge/replies/test_facts.py::test_a_marker_is_read_off_the_last_line_and_left_out_of_the_hash[summary], tests/adapters/forge/replies/test_facts.py::test_a_marker_is_read_off_the_last_line_and_left_out_of_the_hash[marker-not-on-the-last-line], tests/adapters/forge/replies/test_facts.py::test_a_marker_is_read_off_the_last_line_and_left_out_of_the_hash[none]
+origin: src/kraft/adapters/forge/replies/facts.py
+
+## REQ thread-reads-and-writes-exist-on-every-forge
+The system SHALL read one review thread of a merge request, reply in it, resolve
+it, read and write the merge request's top-level comments, delete a note and read
+the login it writes as, on GitHub and GitLab, through the CLI and the API clients
+alike, and SHALL NOT read a thread of another merge request as this one's.
+enforced-by: tests/adapters/forge/test_thread_io.py::test_viewer_is_the_login_kraft_writes_as[gh], tests/adapters/forge/test_thread_io.py::test_viewer_is_the_login_kraft_writes_as[glab], tests/adapters/forge/test_thread_io.py::test_read_thread[gh], tests/adapters/forge/test_thread_io.py::test_read_thread[gh-another-pull-request], tests/adapters/forge/test_thread_io.py::test_read_thread[gh-not-a-thread], tests/adapters/forge/test_thread_io.py::test_read_thread[glab], tests/adapters/forge/test_thread_io.py::test_read_thread[glab-locked], tests/adapters/forge/test_thread_io.py::test_read_thread[glab-missing], tests/adapters/forge/test_thread_io.py::test_reply_to_thread_posts_on_the_first_comment[gh], tests/adapters/forge/test_thread_io.py::test_reply_to_thread_posts_on_the_first_comment[gh-body-starting-with-at], tests/adapters/forge/test_thread_io.py::test_reply_to_thread_posts_on_the_first_comment[glab], tests/adapters/forge/test_thread_io.py::test_resolve_thread[gh], tests/adapters/forge/test_thread_io.py::test_resolve_thread[glab], tests/adapters/forge/test_thread_io.py::test_mr_comments[gh], tests/adapters/forge/test_thread_io.py::test_mr_comments[glab], tests/adapters/forge/test_thread_io.py::test_upsert_comment[gh-create], tests/adapters/forge/test_thread_io.py::test_upsert_comment[gh-edit], tests/adapters/forge/test_thread_io.py::test_upsert_comment[glab-create], tests/adapters/forge/test_thread_io.py::test_upsert_comment[glab-edit], tests/adapters/forge/test_thread_io.py::test_delete_note[gh-thread], tests/adapters/forge/test_thread_io.py::test_delete_note[gh-comment], tests/adapters/forge/test_thread_io.py::test_delete_note[glab], tests/adapters/forge/test_github_parity.py::test_every_github_method_answers_alike[github-viewer], tests/adapters/forge/test_github_parity.py::test_every_github_method_answers_alike[github-read_thread], tests/adapters/forge/test_github_parity.py::test_every_github_method_answers_alike[github-reply_to_thread], tests/adapters/forge/test_github_parity.py::test_every_github_method_answers_alike[github-resolve_thread], tests/adapters/forge/test_github_parity.py::test_every_github_method_answers_alike[github-mr_comments], tests/adapters/forge/test_github_parity.py::test_every_github_method_answers_alike[github-upsert_comment], tests/adapters/forge/test_github_parity.py::test_every_github_method_answers_alike[github-delete_note], tests/adapters/forge/test_forge_parity.py::test_every_forge_method_answers_alike[viewer], tests/adapters/forge/test_forge_parity.py::test_every_forge_method_answers_alike[read_thread], tests/adapters/forge/test_forge_parity.py::test_every_forge_method_answers_alike[reply_to_thread], tests/adapters/forge/test_forge_parity.py::test_every_forge_method_answers_alike[resolve_thread], tests/adapters/forge/test_forge_parity.py::test_every_forge_method_answers_alike[mr_comments], tests/adapters/forge/test_forge_parity.py::test_every_forge_method_answers_alike[upsert_comment], tests/adapters/forge/test_forge_parity.py::test_every_forge_method_answers_alike[delete_note], tests/adapters/forge/test_forge_thread_contract.py::test_gh_thread_writes_against_a_real_pull_request, tests/adapters/forge/test_forge_thread_contract.py::test_glab_thread_writes_against_a_real_merge_request
+origin: src/kraft/adapters/forge/models.py
+
+## REQ agent-text-that-could-render-or-leak-is-refused
+IF agent text bound for the forge holds a control or invisible character, an
+image, an HTML comment or a Kraft marker, URL text, an escaped backtick or a token
+shape anywhere, or Markdown link syntax, raw HTML, a character reference or a
+backslash escape outside code, THEN the system SHALL refuse it.
+enforced-by: tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[zero-width], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[bidi], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[bell], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[markdown-image], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[img-tag], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[html-comment], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[forged-marker], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[url], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[www], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[protocol-relative], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[markdown-link], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[link-reference], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[link-definition], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[autolink], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[url-in-a-span], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[a-bare-word-and-colon], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[a-type-annotation-in-a-span], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[index-chain-in-a-span], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[generic-in-a-span], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[comparison-in-a-fence], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[cr-only-link-definition], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[raw-html], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[escaped-backtick], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[fence-with-a-backtick-info], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[entity-in-a-fence], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[entity-in-a-span], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[entity-in-prose], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[numeric-reference], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[backslash-escape], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[token-in-a-fence], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[sk-token], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[aws-key], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[pem-header]
+origin: src/kraft/adapters/forge/replies/body.py
+
+## REQ quotes-in-agent-text-are-verbatim-and-prose-is-capped
+IF a code span, a code block or a block quote in agent text is not found verbatim
+in a tracked file at the head or in a note of the thread, or the text holds more
+than 1,500 bytes besides its verbatim quotes, THEN the system SHALL refuse it,
+and SHALL count a quote of under 20 bytes, of any form, as prose, not as a quote.
+enforced-by: tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[span-verbatim], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[span-not-verbatim], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[fence-verbatim], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[fence-not-verbatim], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[block-quote-of-a-note], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[block-quote-not-verbatim], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[indented-block-verbatim], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[prose-over-the-cap], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[quotes-are-not-prose], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[many-short-spans-are-prose], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[a-long-span-is-a-quote], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[many-short-block-quotes-are-prose], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[many-one-line-fences-are-prose], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[many-short-indented-blocks-are-prose], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[a-20-byte-quote-counts], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[a-19-byte-quote-is-prose], tests/adapters/forge/replies/test_body.py::test_repo_quotes_search_the_tracked_files_at_the_head[in-a-line], tests/adapters/forge/replies/test_body.py::test_repo_quotes_search_the_tracked_files_at_the_head[absent], tests/adapters/forge/replies/test_body.py::test_repo_quotes_search_the_tracked_files_at_the_head[whole-lines-in-order], tests/adapters/forge/replies/test_body.py::test_repo_quotes_search_the_tracked_files_at_the_head[out-of-order], tests/adapters/forge/replies/test_body.py::test_repo_quotes_search_the_tracked_files_at_the_head[common-anchor-with-many-hits], tests/adapters/forge/replies/test_body.py::test_repo_quotes_search_the_tracked_files_at_the_head[all-blank-block], tests/adapters/forge/replies/test_body.py::test_repo_quotes_search_the_tracked_files_at_the_head[crlf-file]
+origin: src/kraft/adapters/forge/replies/body.py
+
+## REQ a-reply-never-carries-a-secret-kraft-knows
+IF agent text holds, as written, or squeezed when it looks like a credential,
+forwards or reversed, a value of 8 characters or more that is a named agent
+credential (any shape from 16), a token Kraft's log redaction knows, or a worker
+environment value that is not a baseline or Kraft session name and not plain,
+THEN the system SHALL refuse it, and SHALL NOT refuse anything for a shorter value.
+enforced-by: tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[secret-as-written], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[secret-reversed], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[secret-squeezed], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[hyphenated-config-value-in-prose], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[config-value-as-written], tests/adapters/forge/replies/test_body.py::test_the_gate_refuses_what_could_render_run_or_leak[config-value-reversed], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[named-short-placeholder], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[named-plain-word-8-to-15], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[named-16-plus-plain], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[named-real-key], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[passthrough], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[literal-env], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[plain-words-numbers-booleans-and-short], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[baseline], tests/adapters/forge/replies/test_body.py::test_the_secrets_kraft_knows[kraft-session-names], tests/adapters/forge/replies/test_body.py::test_registered_tokens_and_extras[a-registered-token], tests/adapters/forge/replies/test_body.py::test_registered_tokens_and_extras[a-short-extra], tests/adapters/forge/replies/test_body.py::test_registered_tokens_and_extras[a-long-extra], tests/adapters/forge/replies/test_body.py::test_a_short_or_empty_secret_refuses_nothing
+origin: src/kraft/adapters/forge/replies/body.py
+
+## REQ a-reply-is-neutralised-led-capped-signed-and-marked
+WHEN Kraft builds a note from agent text that passed the gate, the system SHALL
+normalise its line breaks, neutralise every `/` line and every mention or
+reference sigil with a word joiner, redact long random-looking strings, put
+Kraft's lead first, cut it to 60,000 bytes closing an open code fence, and end it
+with Kraft's footer and the hidden marker.
+enforced-by: tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[plain], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[line-breaks], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[slash-command], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[indented-slash], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[slash-in-code], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[mention], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[mention-underscore-and-dot], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[issue-and-mr-refs], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[label-milestone-snippet-epic], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[user-at-sha], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[iteration], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[vulnerability], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[jira-key], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[no-sigil-target], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[inside-code-too], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[high-entropy], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[a-token-with-a-key-shape-inside], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[a-full-sha-is-kept], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[an-identifier-is-kept], tests/adapters/forge/replies/test_body.py::test_the_note_is_neutralised_led_signed_and_marked[mixed-case-path], tests/adapters/forge/replies/test_body.py::test_a_note_too_long_is_cut_closing_its_fence_before_the_footer, tests/adapters/forge/replies/test_body.py::test_a_cut_never_splits_a_character
+origin: src/kraft/adapters/forge/replies/body.py
+
+## REQ a-reply-intent-is-recorded-before-its-write
+WHEN Kraft is about to write a reply or the summary comment, the system SHALL
+record its intent first, then each send that did not post, the post, a reconcile
+that found nothing, its end and any duplicate deleted, and SHALL read an intent's
+state from every event of the work item across retries.
+enforced-by: tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[intended], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[unclear], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[not-found-is-pending-again], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[rate-limited-counts], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[deferred-does-not-count], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[reconciled], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[posted], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[refused], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[superseded-after-a-reconcile], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[given-up], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[send-began-is-unclear], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[began-then-posted], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[a-crash-found-absent], tests/adapters/forge/replies/test_record.py::test_the_record_spans_every_fork, tests/adapters/forge/replies/test_record.py::test_intend_refuses_an_unknown_op_or_a_missing_hash[unknown-op], tests/adapters/forge/replies/test_record.py::test_intend_refuses_an_unknown_op_or_a_missing_hash[no-body-hash], tests/adapters/forge/replies/test_record.py::test_posted_hashes_map_every_id_to_the_returned_hash
+origin: src/kraft/adapters/forge/replies/record.py
+
+## REQ forge-write-failures-are-classified
+WHEN a write for a reply fails, the system SHALL treat no answer or a 5xx as
+unclear, a rate limit as retryable after its wait, a CLI that never started, an
+authentication, TLS or SSO failure or GitHub's one-pending-review refusal as
+deferred, and every other refusal as final.
+enforced-by: tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[cli-timeout], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[no-http-response], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[http-timeout], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[5xx], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[429], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[403-rate-limit], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[graphql-rate-limit], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[cli-never-started], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[401], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[tls], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[403-sso], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[not-signed-in], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[dns-failure], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[connection-refused], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[connection-timed-out], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[422-pending-review], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[422-other], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[400], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[403-forbidden], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[404], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[409], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[410], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[413], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[graphql-forbidden], tests/adapters/forge/replies/test_send.py::test_a_failed_write_is_classified[graphql-unknown], tests/adapters/forge/test_transport.py::test_an_error_names_its_errors_detail[errors-objects], tests/adapters/forge/test_transport.py::test_an_error_names_its_errors_detail[errors-strings], tests/adapters/forge/test_transport.py::test_an_error_names_its_errors_detail[message-only], tests/adapters/forge/test_http.py::test_a_call_is_bounded_and_its_error_stays_short[errors-detail], tests/adapters/forge/test_forge_thread_contract.py::test_gh_thread_writes_against_a_real_pull_request
+origin: src/kraft/adapters/forge/replies/send.py
+
+## REQ a-reply-has-at-most-three-counted-sends
+WHEN Kraft sends a reply, the system SHALL send only a pending intent the gate
+allows, SHALL count each unclear or rate-limited send and give the intent up after
+three, SHALL wait out a rate limit's retry-after, and SHALL try a deferred intent
+at most once every five minutes without counting it.
+enforced-by: tests/adapters/forge/replies/test_send.py::test_counted_sends_and_backoff, tests/adapters/forge/replies/test_send.py::test_send_skips_an_intent_that_is_not_pending[unclear], tests/adapters/forge/replies/test_send.py::test_send_skips_an_intent_that_is_not_pending[posted], tests/adapters/forge/replies/test_send.py::test_send_skips_an_intent_that_is_not_pending[ended], tests/adapters/forge/replies/test_send.py::test_the_gate_ends_an_intent_it_will_not_send[refused], tests/adapters/forge/replies/test_send.py::test_the_gate_ends_an_intent_it_will_not_send[superseded], tests/adapters/forge/replies/test_send.py::test_a_send_records_its_outcome[posted], tests/adapters/forge/replies/test_send.py::test_a_send_records_its_outcome[unclear], tests/adapters/forge/replies/test_send.py::test_a_send_records_its_outcome[refused], tests/adapters/forge/replies/test_send.py::test_a_send_records_its_outcome[an-os-error-is-unclear]
+origin: src/kraft/adapters/forge/replies/send.py
+
+## REQ forge-writes-are-spaced-per-account
+WHILE Kraft writes replies, the system SHALL start at most one write a second on
+each forge account, across work items.
+enforced-by: tests/adapters/forge/replies/test_send.py::test_writes_are_spaced_per_account[same-account-waits-a-second], tests/adapters/forge/replies/test_send.py::test_writes_are_spaced_per_account[another-account-does-not]
+origin: src/kraft/adapters/forge/replies/send.py
+
+## REQ a-send-cut-short-is-reconciled-not-resent
+WHEN a send is about to write, the system SHALL first record it as unclear, so a
+crash, cancel or restart before its outcome is recorded is reconciled before any
+resend, and SHALL treat a failure that is not a forge error as unclear.
+enforced-by: tests/adapters/forge/replies/test_send.py::test_a_crash_mid_send_leaves_the_intent_unclear, tests/adapters/forge/replies/test_send.py::test_a_send_records_its_outcome[an-os-error-is-unclear], tests/adapters/forge/replies/test_record.py::test_an_intent_s_state_is_folded_from_its_events[send-began-is-unclear]
+origin: src/kraft/adapters/forge/replies/send.py
+
+## REQ a-posting-point-stops-sending-after-its-time-budget
+WHEN 60 seconds have passed since a posting point began, the system SHALL start
+no further send there, leaving what is unsent for the next posting point.
+enforced-by: tests/adapters/forge/replies/test_send.py::test_a_posting_point_stops_sending_after_its_time_budget
+origin: src/kraft/adapters/forge/replies/send.py
+
+## REQ an-unclear-write-is-reconciled-before-any-resend
+WHEN a posting point begins and a write's outcome is unclear, the system SHALL
+read where its copy would be and record it posted when a note the viewer wrote
+carries its marker, and otherwise record it not found and leave any resend to the
+gate, and SHALL count a marker on any other author's note as nothing.
+enforced-by: tests/adapters/forge/replies/test_send.py::test_an_unclear_write_is_reconciled_by_its_marker[landed-with-a-lost-answer], tests/adapters/forge/replies/test_send.py::test_an_unclear_write_is_reconciled_by_its_marker[never-landed], tests/adapters/forge/replies/test_send.py::test_a_marker_on_another_authors_note_is_not_a_reconciled_copy, tests/adapters/forge/replies/test_send.py::test_a_failed_reconcile_read_leaves_the_intent_unclear, tests/adapters/forge/replies/test_send.py::test_a_summary_edit_is_reconciled_by_its_body_hash[edit-landed], tests/adapters/forge/replies/test_send.py::test_a_summary_edit_is_reconciled_by_its_body_hash[edit-did-not-land]
+origin: src/kraft/adapters/forge/replies/send.py
+
+## REQ a-duplicate-reply-keeps-the-earliest-copy
+WHEN two notes the viewer wrote carry one intent's marker and the same body, the
+system SHALL keep the earliest, delete the others and move the record to the one
+it kept, at later posting points, within the posting point's time budget.
+enforced-by: tests/adapters/forge/replies/test_send.py::test_a_duplicate_keeps_the_earliest_copy[the-record-moves-to-the-earliest], tests/adapters/forge/replies/test_send.py::test_a_duplicate_keeps_the_earliest_copy[the-record-holds-the-earliest], tests/adapters/forge/replies/test_send.py::test_the_sweep_reads_nothing_past_its_budget
+origin: src/kraft/adapters/forge/replies/send.py
+
+## REQ replies-are-refused-until-the-conversation-arrives
+WHILE the reply round and its limits have not shipped, IF a bot reviewer entry
+sets `replies: true` in a task's `config`, `repos.yaml` or a node override, THEN
+the system SHALL refuse it, naming that it arrives in a later release. A check
+entry SHALL never take `replies`, and an entry's dump SHALL leave `replies` out
+when it is false.
+enforced-by: tests/adapters/forge/test_automated_review.py::test_a_reviewer_entry_is_a_bot_or_a_check[a-bot-with-replies-before-they-arrive], tests/adapters/forge/test_automated_review.py::test_a_reviewer_entry_is_a_bot_or_a_check[a-bot-with-replies-off], tests/adapters/forge/test_automated_review.py::test_a_reviewer_entry_is_a_bot_or_a_check[a-check-with-replies-after-they-arrive], tests/adapters/forge/test_automated_review.py::test_the_schema_does_not_offer_replies_before_they_arrive, tests/test_overrides.py::test_replies_before_they_arrive_is_refused_in_its_own_words
+origin: src/kraft/automated_review.py §BotReviewer -- Omid, 2026-11-20: refuse `replies: true` at load until the third Part 2 item lands.
+
+## REQ a-finding-names-only-threads-on-its-own-file
+WHEN a reviewer's result file names review-bot threads on a finding, the system
+SHALL keep only the threads, of a bot with replies on, that were in the
+collection that session was handed and whose file is the finding's file, compared as normalised repository-relative
+paths, and SHALL NOT count them in the finding's identity.
+enforced-by: tests/test_findings.py::test_a_finding_keeps_only_threads_on_its_own_file[another-file], tests/test_findings.py::test_a_finding_keeps_only_threads_on_its_own_file[not-collected], tests/test_findings.py::test_a_finding_keeps_only_threads_on_its_own_file[not-collected-on-a-pathless-finding], tests/test_findings.py::test_a_finding_keeps_only_threads_on_its_own_file[normalised], tests/test_findings.py::test_a_finding_keeps_only_threads_on_its_own_file[a-file-thread-on-a-pathless-finding], tests/test_findings.py::test_a_finding_reads_its_thread_ids[a-list]
+origin: src/kraft/findings.py §on_their_files
+
+## REQ head-wait-activity-leaves-out-the-conversation
+WHERE a bot the review wait reads has replies on, the system SHALL NOT count as
+the bot's activity, or hand on as its summary, any note of a thread that holds a
+Kraft note, nor a review whose body is blank and whose every comment is a reply in
+such a thread, unless it requests changes or approves, and SHALL NOT count a
+change in the bot's unresolved threads that Kraft has posted in. With replies
+off, the wait SHALL read activity as before.
+enforced-by: tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[gh-reply-in-a-kraft-thread], tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[gh-the-same-off], tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[gh-the-bot-s-own-review-still-counts], tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[gh-review-with-a-new-thread], tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[gh-a-changes-requested-reply-still-counts], tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[gh-marker-on-a-bot-note], tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[glab-reply-in-a-kraft-discussion], tests/adapters/forge/test_reviewer_feedback_replies.py::test_the_head_wait_leaves_out_the_conversation[glab-the-same-off], tests/adapters/forge/test_settle.py::test_a_thread_kraft_posted_in_leaves_the_compared_set[bot-resolved-a-kraft-thread], tests/adapters/forge/test_settle.py::test_a_thread_kraft_posted_in_leaves_the_compared_set[bot-resolved-another-thread]
+origin: src/kraft/adapters/forge/settle.py §decide
+
+## REQ the-viewer-is-read-only-when-there-is-work
+WHERE no reviewer of a node's review wait has replies on, the system SHALL make
+no forge call for replies. A collecting wait with such a reviewer SHALL read the
+login Kraft writes as once and keep it for the wait, and mark each collected note
+Kraft wrote as Kraft's. An unreadable viewer SHALL post nothing at that posting
+point.
+enforced-by: tests/adapters/forge/test_run_replies.py::test_a_replies_on_wait_reads_the_viewer_once_and_marks_kraft_notes, tests/adapters/forge/test_run_replies.py::test_a_replies_off_wait_never_reads_the_viewer, tests/executor/test_replies.py::test_an_unreadable_viewer_posts_nothing_until_it_reads
+origin: src/kraft/adapters/forge/run.py §_collect_review
+
+## REQ a-triage-reply-respects-the-cap-and-kraft-s-last-word
+IF a review-bot thread is resolved, locked, not started by a bot with replies on,
+or holds a note that is neither a configured bot's nor Kraft's unedited one, THEN
+the system SHALL post no reply in it; and it SHALL post no triage reply when
+Kraft's note is the thread's latest, or when Kraft's triage replies in the thread
+over the item's life, deleted, unclear and unrecorded marked ones included, have
+reached the cap.
+enforced-by: tests/adapters/forge/replies/test_gate.py::test_the_gate_reads_the_thread[a-person-wrote-in-it], tests/adapters/forge/replies/test_gate.py::test_the_gate_reads_the_thread[a-kraft-note-edited], tests/adapters/forge/replies/test_gate.py::test_the_gate_reads_the_thread[the-bot-from-a-user-account], tests/adapters/forge/replies/test_gate.py::test_the_gate_reads_the_thread[started-by-a-bot-with-replies-off], tests/adapters/forge/replies/test_gate.py::test_the_gate_reads_the_thread[locked], tests/adapters/forge/replies/test_gate.py::test_a_triage_reply_waits_its_turn[after-kraft], tests/adapters/forge/replies/test_gate.py::test_a_triage_reply_waits_its_turn[at-the-cap], tests/adapters/forge/replies/test_gate.py::test_a_triage_reply_waits_its_turn[an-unclear-send-counts], tests/adapters/forge/replies/test_gate.py::test_a_triage_reply_waits_its_turn[marked-notes-the-record-lost], tests/adapters/forge/replies/test_gate.py::test_a_triage_reply_waits_its_turn[a-fix-reply-does-not-count]
+origin: src/kraft/adapters/forge/replies/gate.py §triage_refusal
+
+## REQ replies-work-only-where-a-fix-loop-can-act
+WHERE a node's review wait names a bot with replies on, but the node has no fix
+loop or no triage among its own steps, or the item has several repositories, the
+system SHALL post nothing for it and SHALL record why once per node run; it SHALL
+do the same when the login Kraft writes as is one of the configured bots. A node
+whose review wait names no bot with replies on SHALL make no forge call for
+replies and record nothing.
+enforced-by: tests/executor/test_replies.py::test_replies_have_no_effect_where_nothing_can_act[no-fix-loop], tests/executor/test_replies.py::test_replies_have_no_effect_where_nothing_can_act[no-triage], tests/executor/test_replies.py::test_replies_have_no_effect_where_nothing_can_act[the-viewer-is-the-bot], tests/executor/test_replies.py::test_posting_point_has_no_effect_on_a_multi_repo_item_or_with_no_forge[multi-repo], tests/executor/test_replies.py::test_posting_point_has_no_effect_on_a_multi_repo_item_or_with_no_forge[no-forge], tests/executor/test_replies.py::test_replies_off_posts_nothing_and_asks_the_forge_nothing, tests/executor/test_replies.py::test_an_unreadable_viewer_posts_nothing_until_it_reads
+origin: src/kraft/executor/replies.py §_post -- Omid, 2026-11-20: on a node without a fix loop, replies have no effect.
+
+## REQ triage-replies-come-from-the-latest-triage
+WHEN Kraft posts a triage's replies, the system SHALL take them only from the
+node's latest triage in its current run that started an agent and finished with a
+result, SHALL NOT take any from a skipped triage, SHALL supersede a reply of an
+earlier session, SHALL refuse one whose text the latest triage's result no longer
+holds, and SHALL NOT post a reply in a thread the same triage raised as a
+finding.
+enforced-by: tests/executor/test_replies.py::test_a_reply_never_goes_beside_a_finding_on_the_same_thread, tests/executor/test_replies.py::test_the_latest_triage_is_the_newest_that_ran[a-skip-after-the-verdict], tests/executor/test_replies.py::test_the_latest_triage_is_the_newest_that_ran[a-failure-after-the-verdict], tests/executor/test_replies.py::test_the_latest_triage_is_the_newest_that_ran[before-the-run-began], tests/executor/test_replies.py::test_a_triage_reply_is_refused_or_superseded[a-thread-not-collected], tests/executor/test_replies.py::test_a_triage_reply_is_refused_or_superseded[a-newer-triage-ran], tests/executor/test_replies.py::test_a_triage_reply_is_refused_or_superseded[the-text-is-gone]
+origin: src/kraft/executor/replies.py §latest_triage
+
+## REQ a-triage-reply-is-posted-only-on-a-current-head
+WHEN Kraft is about to post a triage reply, IF the triage session's head, its
+collection's head, the checkout's head and the forge's head of the merge request
+are not one commit, or the thread holds a bot's or a person's note the triage
+never read, or the reply's rendered text is no longer the one recorded at its
+intent, THEN the system SHALL supersede it and never post it; and IF the merge
+request is not open, THEN the system SHALL refuse it.
+enforced-by: tests/executor/test_replies.py::test_a_triage_reply_is_refused_or_superseded[the-forge-head-moved], tests/executor/test_replies.py::test_the_thread_moved_since_the_triage_read_it, tests/executor/test_replies.py::test_a_triage_reply_is_refused_or_superseded[the-mr-is-closed], tests/executor/test_replies.py::test_a_triage_reply_is_refused_or_superseded[the-result-file-changed]
+origin: src/kraft/executor/replies.py §_Point.stale
+
+## REQ a-reply-is-intended-once-whatever-the-wakes
+WHEN a node's measurement returns again and again on the same head (a parked wait
+woken), the system SHALL create one intent per reply and post it at most once: a
+write whose answer was lost SHALL be reconciled at a later posting point, not
+sent again, and a copy that lands late SHALL be found and deleted at a later
+posting point. A reply still pending SHALL be posted at the posting point after a
+recovery re-measure, and at each completion of the node (a clean recovery, a
+clean measure, a judge's downgrade), since a reply unposted at completion is
+dropped.
+enforced-by: tests/executor/test_replies.py::test_a_triage_reply_is_posted_once_across_wakes, tests/executor/test_replies.py::test_a_lost_write_is_reconciled_not_sent_again, tests/executor/test_replies.py::test_a_late_copy_of_an_unclear_write_is_deleted, tests/executor/test_replies.py::test_a_pending_reply_is_posted_at_each_posting_point_that_walk_reaches[after-the-on-failure-repair-and-before-the-fix-cycle], tests/executor/test_replies.py::test_a_pending_reply_is_posted_at_each_posting_point_that_walk_reaches[the-repair-settles-it-and-the-node-completes], tests/executor/test_replies.py::test_a_pending_reply_is_posted_at_each_posting_point_that_walk_reaches[the-judge-downgrades-what-is-left]
+origin: src/kraft/executor/replies.py §_Point.intend

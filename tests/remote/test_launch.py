@@ -147,7 +147,7 @@ async def test_the_local_worker_is_full_to_a_scope_whose_group_runs_there(world,
     link.take("other/1", "heavy")
     async with _placed(world, concurrency_group=group) as p:
         assert (p.held_local == "w/1") is local
-        assert local or p.wait == "waiting for a machine in gpu"
+        assert local or p.wait == "waiting for test group heavy: other is running it on local"
 
 
 async def test_a_test_group_goes_to_another_member_and_a_refusing_member_never_holds_it(world):
@@ -294,6 +294,40 @@ async def test_two_placements_never_take_one_free_slot(world):
     async with _placed(world, "w/1") as first, _placed(world, "w/2") as second:
         assert first.runner == "local" and second.runner == "gpu"
         assert second.wait == "waiting for a machine in gpu" and second.held_local is None
+
+
+async def test_a_step_that_cannot_park_says_the_local_holder_of_its_test_group(world):
+    world.refuse.update({"a", "b"})
+    local_link.current().take("other/3", "heavy")  # the local worker's one slot is busy too
+    waiter = asyncio.create_task(
+        _placed(world, "w/2", can_park=False, concurrency_group="heavy").__aenter__()
+    )
+    await asyncio.sleep(0.1)
+    assert not waiter.done()
+    assert "waiting for test group heavy: other is running it on local" in _said(world)[0]
+    local_link.current().release("other/3")
+    placement = await asyncio.wait_for(waiter, 2)
+    assert placement.runner == "local"
+    placement.release()
+
+
+async def test_a_local_only_holder_is_not_named_when_the_step_cannot_run_there(
+    world,
+):
+    world.hub.apply(_workers(local_group=False))  # the local worker is not in the runner group
+    world.refuse.update({"a", "b"})
+    local_link.current().take("other/3", "heavy")  # the local worker holds the group
+    async with _placed(world, "w/2", concurrency_group="heavy") as p:
+        assert p.wait == "waiting for a machine in gpu"
+
+
+async def test_a_remote_holder_of_the_test_group_wins_over_the_local_holder(world):
+    world.refuse.update({"a", "b"})
+    world.hub.adopt("a", "other/1", "heavy")  # a remote machine holds the group
+    world.hub.apply(_workers(a={"capacity": 2}, b={}))  # a keeps a free slot while holding it
+    local_link.current().take("other/3", "heavy")  # the local worker holds it too
+    async with _placed(world, "w/2", concurrency_group="heavy") as p:
+        assert p.wait == "waiting for test group heavy: other is running it on a"
 
 
 async def test_a_step_that_cannot_park_waits_for_whichever_side_frees_first(world):

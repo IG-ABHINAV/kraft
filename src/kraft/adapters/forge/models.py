@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -21,7 +21,8 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from kraft.adapters.forge.mr import MRMeta
-    from kraft.automated_review import AutomatedReview, Reviewers
+    from kraft.adapters.forge.replies import facts
+    from kraft.automated_review import BotReviewer, CheckReviewer, Reviewers
 
 CIState = Literal["pending", "success", "failed"]
 
@@ -225,7 +226,7 @@ class ReviewerFeedback:
     (`settle.decide`) and to hand on what it said. Nothing here says how the
     forge was asked."""
 
-    reviewer: AutomatedReview
+    reviewer: BotReviewer | CheckReviewer
     #: The newest comment, review or inline-comment update by this bot, on the
     #: forge's clock; None when it has done none.
     last_activity: datetime | None
@@ -234,11 +235,59 @@ class ReviewerFeedback:
     #: "updated_at": iso}`.
     summaries: tuple[dict, ...] = ()
     #: Its unresolved inline threads, from any push: `{"id": str, "file": str |
-    #: None, "line": int | None, "body": str}`.
+    #: None, "line": int | None, "body": str, "notes": tuple[ForgeNote, ...]}`.
+    #: `body` is every note flattened (pending and system ones too); `notes`
+    #: leaves those out and keeps each note's ids, author and time.
     threads: tuple[dict, ...] = ()
     #: A `check:` reviewer's check: `{"name", "finished": bool, "conclusion":
     #: str | None, "output": str}`; None for a bot.
     check: dict | None = None
+
+
+@dataclass(frozen=True)
+class ForgeNote:
+    """One note of a review thread, or one top-level comment, as the forge returned it."""
+
+    #: GitHub: the GraphQL node id; GitLab: the note id.
+    id: str
+    #: GitHub: `fullDatabaseId`, what REST addresses; GitLab: the note id again.
+    rest_id: str
+    author: str
+    #: GitHub: `Bot`, `User`, ... (GraphQL `__typename`, REST `user.type`); None on GitLab.
+    author_type: str | None
+    body: str
+    created_at: str
+    updated_at: str
+    #: GitHub: the node id of the comment this one answers.
+    reply_to: str | None = None
+    #: GitHub: the REST id of the review this comment was submitted in.
+    review_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ForgeThread:
+    """One review thread (a GitLab discussion), with its notes in order."""
+
+    id: str
+    #: The pull request's number, the merge request's iid.
+    mr: int
+    resolved: bool
+    outdated: bool
+    can_reply: bool
+    can_resolve: bool
+    file: str | None
+    line: int | None
+    notes: tuple[ForgeNote, ...]
+
+
+@dataclass(frozen=True)
+class Posted:
+    """What a write left on the forge: the note's ids (GitHub: REST id and node id;
+    GitLab: the note id), when it was created, and its body as the forge returned it."""
+
+    ids: tuple[str, ...]
+    created_at: str
+    body: str
 
 
 @dataclass(frozen=True)
@@ -491,8 +540,46 @@ class Forge(Protocol):
         self, *, repo: Path, branch: str, reviewers: Reviewers
     ) -> ReviewResult: ...
     async def reviewer_feedback(
-        self, *, repo: Path, branch: str, reviewers: Reviewers, since: datetime
-    ) -> list[ReviewerFeedback]: ...
+        self,
+        *,
+        repo: Path,
+        branch: str,
+        reviewers: Reviewers,
+        since: datetime,
+        kraft: facts.Kraft | None = None,
+    ) -> list[ReviewerFeedback]:
+        """What each reviewer has said; `kraft` leaves Kraft's own conversation in a
+        bot's threads out of the bot's activity and summaries."""
+        ...
+
+    async def viewer(self, *, repo: Path) -> str:
+        """The login Kraft writes as."""
+        ...
+
+    async def read_thread(self, *, repo: Path, branch: str, thread_id: str) -> ForgeThread | None:
+        """One review thread of the branch's merge request, notes filtered as the
+        collection filters them; None when the merge request has no such thread."""
+        ...
+
+    async def reply_to_thread(self, *, repo: Path, thread: ForgeThread, body: str) -> Posted:
+        """Reply in a thread read just before (it carries the number and the first
+        note's REST id)."""
+        ...
+
+    async def resolve_thread(self, *, repo: Path, thread: ForgeThread) -> None: ...
+    async def mr_comments(self, *, repo: Path, branch: str) -> tuple[ForgeNote, ...]:
+        """The merge request's top-level comments, every page, system notes left out."""
+        ...
+
+    async def upsert_comment(
+        self, *, repo: Path, branch: str, note_id: str | None, body: str
+    ) -> Posted:
+        """A new top-level comment when `note_id` is None, else that one edited."""
+        ...
+
+    async def delete_note(
+        self, *, repo: Path, branch: str, note: ForgeNote, in_thread: bool
+    ) -> None: ...
     async def mr_details(self, *, repo: Path, branch: str) -> MRDetails | None: ...
     async def pipelines(self, *, repo: Path, branch: str, base: str) -> tuple[Pipeline, ...]:
         """Newest first: at most 20 (GitHub: 20 branch runs and 20 merge-queue runs)."""
@@ -520,6 +607,11 @@ def _head(repo: Path) -> str | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     return out.stdout.strip()
+
+
+#: A `FakeForge.write_script` entry: the write lands, then raises a `ForgeError` with
+#: no status, as a write whose answer timed out.
+LOST = "lost"
 
 
 @dataclass
@@ -626,6 +718,21 @@ class FakeForge:
     #: `review_results`. Empty, each reviewer answers with nothing to say: a
     #: bot with no activity, a check that finished and passed.
     feedback_script: list[list[ReviewerFeedback]] = field(default_factory=list)
+    #: Review threads by id: `read_thread` answers them, the writes change them.
+    threads: dict[str, ForgeThread] = field(default_factory=dict)
+    #: Top-level comments, oldest first: `mr_comments` answers them.
+    comments: list[ForgeNote] = field(default_factory=list)
+    #: The login `viewer` answers and every note the fake writes is by; a
+    #: `ForgeError` is raised instead.
+    viewer_login: str | ForgeError = "kraft-user"
+    #: What each write does, one entry per write, consumed and not repeated (empty:
+    #: every write lands): a `ForgeError` is raised and nothing lands; `LOST` lands,
+    #: then raises a `ForgeError` with no status.
+    write_script: list[ForgeError | str] = field(default_factory=list)
+    #: Every write asked for, in order, landed or not: `(op, target id)`.
+    writes: list[tuple[str, str]] = field(default_factory=list)
+    #: Notes the fake has written: their ids and times come from it, so order is stable.
+    _notes_made: int = field(default=0, init=False, repr=False)
     #: `approval_state`'s answers, consumed like `ci_states`.
     approval_states: list[ApprovalState] = field(default_factory=lambda: ["approved"])
     #: `branch_ci_status`'s own script, for the post-merge pipeline; `None`
@@ -820,8 +927,15 @@ class FakeForge:
         return ReviewResult(result) if isinstance(result, str) else result
 
     async def reviewer_feedback(
-        self, *, repo: Path, branch: str, reviewers: Reviewers, since: datetime
+        self,
+        *,
+        repo: Path,
+        branch: str,
+        reviewers: Reviewers,
+        since: datetime,
+        kraft: facts.Kraft | None = None,
     ) -> list[ReviewerFeedback]:
+        # `kraft` is ignored: the script already says what each reviewer said.
         self.reviewers_asked.append(reviewers)
         if self.feedback_script:
             return self._next(self.feedback_script)
@@ -835,6 +949,90 @@ class FakeForge:
             )
             for r in reviewers
         ]
+
+    async def viewer(self, *, repo: Path) -> str:
+        if isinstance(self.viewer_login, ForgeError):
+            raise self.viewer_login
+        return self.viewer_login
+
+    async def read_thread(self, *, repo: Path, branch: str, thread_id: str) -> ForgeThread | None:
+        return self.threads.get(thread_id)
+
+    async def mr_comments(self, *, repo: Path, branch: str) -> tuple[ForgeNote, ...]:
+        return tuple(self.comments)
+
+    def _write(self, op: str, target: str) -> bool:
+        """Record a write and take its script entry: raises a scripted error before
+        anything lands, and says whether to raise a lost answer after it landed."""
+        self.writes.append((op, target))
+        step = self.write_script.pop(0) if self.write_script else None
+        if isinstance(step, ForgeError):
+            raise step
+        return step == LOST
+
+    def _lost(self) -> ForgeError:
+        return ForgeError("fake: the answer was lost")
+
+    def _note(self, body: str) -> ForgeNote:
+        self._notes_made += 1
+        n = self._notes_made
+        return ForgeNote(
+            f"FN{n}",
+            str(1000 + n),
+            self.viewer_login if isinstance(self.viewer_login, str) else "",
+            "User",
+            body,
+            f"2026-01-01T00:{n // 60:02d}:{n % 60:02d}Z",
+            f"2026-01-01T00:{n // 60:02d}:{n % 60:02d}Z",
+        )
+
+    @staticmethod
+    def _posted(note: ForgeNote) -> Posted:
+        return Posted((note.rest_id, note.id), note.created_at, note.body)
+
+    async def reply_to_thread(self, *, repo: Path, thread: ForgeThread, body: str) -> Posted:
+        lost = self._write("reply", thread.id)
+        current = self.threads.get(thread.id, thread)
+        note = self._note(body)
+        self.threads[thread.id] = replace(current, notes=(*current.notes, note))
+        if lost:
+            raise self._lost()
+        return self._posted(note)
+
+    async def resolve_thread(self, *, repo: Path, thread: ForgeThread) -> None:
+        lost = self._write("resolve", thread.id)
+        self.threads[thread.id] = replace(self.threads.get(thread.id, thread), resolved=True)
+        if lost:
+            raise self._lost()
+
+    async def upsert_comment(
+        self, *, repo: Path, branch: str, note_id: str | None, body: str
+    ) -> Posted:
+        lost = self._write("upsert", note_id or "new")
+        if note_id is None:
+            note = self._note(body)
+            self.comments.append(note)
+        else:
+            old = next(c for c in self.comments if note_id in (c.id, c.rest_id))
+            note = replace(old, body=body)
+            self.comments[self.comments.index(old)] = note
+        if lost:
+            raise self._lost()
+        return self._posted(note)
+
+    async def delete_note(
+        self, *, repo: Path, branch: str, note: ForgeNote, in_thread: bool
+    ) -> None:
+        lost = self._write("delete", note.id)
+        if in_thread:
+            for tid, thread in self.threads.items():
+                kept = tuple(n for n in thread.notes if n.id != note.id)
+                if len(kept) != len(thread.notes):
+                    self.threads[tid] = replace(thread, notes=kept)
+        else:
+            self.comments = [c for c in self.comments if c.id != note.id]
+        if lost:
+            raise self._lost()
 
     async def retry_jobs(self, *, repo: Path, ci: CIStatus) -> tuple[str, ...]:
         self.retried.append(ci.url)

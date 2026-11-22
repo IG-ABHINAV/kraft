@@ -79,7 +79,7 @@ MODEL_KEYS = {
         read_past=("harness", "fallback", "inputs"),
         refused=("outputs",),
     ),
-    "ForgeTask": _plus(_TASK, read=("target",), read_past=("wait", "reviewers", "pipeline")),
+    "ForgeTask": _plus(_TASK, read=("target",), read_past=("wait", "config")),
     "BuiltinTask": _plus(_TASK, read=("ref", "suite"), read_past=("execution",)),
     "SubprocessTask": _plus(_TASK, read=("command",), refused=("outputs",)),
     "ExecNode": _plus(
@@ -104,7 +104,7 @@ MODEL_KEYS = {
         read_past=("icon", "policy", "runner", "skippable"),
         refused=("on_failure",),
     ),
-    "FixLoop": _plus({}, read=("judge", "max_attempts", "steps", "tasks")),
+    "FixLoop": _plus({}, read=("judge", "max_attempts", "steps", "tasks"), read_past=("early",)),
 }
 #: The keys an extending chain edits its parent with, and what an override may not set.
 EDIT_KEYS = ("remove", "add", "overrides")

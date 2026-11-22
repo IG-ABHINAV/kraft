@@ -171,7 +171,7 @@ export function cardOf(item: ItemDetail, events: KraftEvent[] = [], fileCount: n
 
 export type ActId =
   | "pause" | "unblock" | "steer" | "resume" | "start" | "reject" | "review" | "raise" | "retry" | "escalate" | "answer"
-  | "cancel" | "reopen-mr" | "conflicts" | "board" | "restore"
+  | "cancel" | "reopen-mr" | "rerun-ci" | "conflicts" | "board" | "restore"
   | "repo" | "settings" | "open-mr" | "duplicate" | "archive" | "complete";
 export interface Act {
   id: ActId;
@@ -191,6 +191,7 @@ const actDoor = (item: ItemDetail, id: ActId): ItemAction | null => {
     case "start": return strandedOneOff(item) ? null : "resume";
     case "answer": return "resume";
     case "reopen-mr": return "reopen_mr";
+    case "rerun-ci": return "rerun_ci";
     case "raise": return "retry";
     default: return null;
   }
@@ -229,19 +230,22 @@ function pairTable(item: ItemDetail): { secondary: Act | null; primary: Act | nu
     case "queued": return { secondary: null, primary: a("pause", REMOVE_FROM_QUEUE) };
     // Blocked behind another item: Kraft starts it; Pause takes it out, Unblock starts it without them.
     case "blocked": return { secondary: item.dependencies?.some((d) => !d.met) ? a("unblock", "Unblock") : null, primary: a("pause", "Pause") };
-    case "failed": return { secondary: a("escalate", "Escalate"), primary: a("retry", "Retry") };
+    // A `ci.pipeline` wait's red or broken pipeline: Re-run CI, which retries, as on a stuck stop.
+    case "failed": return admits(item, "rerun_ci", false) ? { secondary: a("retry", "Retry"), primary: a("rerun-ci", "Re-run CI") } : { secondary: a("escalate", "Escalate"), primary: a("retry", "Retry") };
     case "needs_you":
       switch (stop?.kind) {
         case "gate": return { secondary: a("reject", `${REQUEST_CHANGES}…`), primary: a("review", "Review") };
         // No Steer: a retry with one would only stop at the same cap again.
         case "budget": return { secondary: null, primary: offersRaise(item) ? a("raise", "Raise budget") : a("retry", "Retry") };
         // Retry with no raise would only stop at the same cap again, so with the stop's limit the way on is the raise.
-        case "cap": return { secondary: a("steer", "Steer"), primary: stopLimitOf(item) ? a("raise", "Raise cap") : a("retry", "Retry") };
+        // A fix loop at its cap on CI that may have failed outside the code: Re-run CI, which retries, in Steer's place.
+        case "cap": return { secondary: admits(item, "rerun_ci", false) ? a("rerun-ci", "Re-run CI") : a("steer", "Steer"), primary: stopLimitOf(item) ? a("raise", "Raise cap") : a("retry", "Retry") };
         case "question": return { secondary: a("escalate", "Escalate"), primary: a("answer", "Answer") };
         case "conflict": return { secondary: a("cancel", "Cancel…", true), primary: a("conflicts", REVIEW_THE_CONFLICTS) };
         // No merge request on file to reopen: Retry, as the desktop header's `needsYouMain` falls back.
         case "mr_closed": return { secondary: a("cancel", "Cancel…", true), primary: admits(item, "reopen_mr", true) ? a("reopen-mr", "Reopen MR") : a("retry", "Retry") };
-        default: return { secondary: a("escalate", "Escalate"), primary: a("retry", "Retry") };
+        // A fix loop stopped on CI that failed outside the code: Re-run CI, which retries; Escalate is in ⋮.
+        default: return admits(item, "rerun_ci", false) ? { secondary: a("retry", "Retry"), primary: a("rerun-ci", "Re-run CI") } : { secondary: a("escalate", "Escalate"), primary: a("retry", "Retry") };
       }
     case "done":
     case "cancelled": return { secondary: null, primary: a("board", "Back to board") };

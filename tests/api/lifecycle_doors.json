@@ -72,11 +72,27 @@
       "reason": "stuck: 1 finding(s) unchanged across cycle 1",
       "mr": true
     },
+    "stuck_on_ci": {
+      "status": "needs_human",
+      "node": "merge_request_feedback",
+      "stop": "stuck",
+      "reason": "judge: CI failed outside the code",
+      "mr": true,
+      "worktree": true
+    },
     "cap": {
       "status": "needs_human",
       "node": "implementation",
       "stop": "cap",
       "reason": "running time hit its cap"
+    },
+    "cap_on_ci": {
+      "status": "needs_human",
+      "node": "merge_request_feedback",
+      "stop": "cap",
+      "reason": "merge_request_feedback.fix_loop exhausted after 3 fix cycle(s)",
+      "mr": true,
+      "worktree": true
     },
     "conflict": {
       "status": "needs_human",
@@ -90,11 +106,27 @@
       "stop": "failed",
       "reason": "the forge refused"
     },
+    "failed_on_pipeline": {
+      "status": "needs_human",
+      "node": "pipeline_watch",
+      "stop": "failed",
+      "reason": "pipeline_watch.main.wait failed: pipeline 7 is red",
+      "pipeline": true,
+      "worktree": true
+    },
     "infra": {
       "status": "needs_human",
       "node": "implementation",
       "stop": "infra",
       "reason": "a session was lost"
+    },
+    "infra_on_pipeline": {
+      "status": "needs_human",
+      "node": "pipeline_watch",
+      "stop": "infra",
+      "reason": "pipeline 7 failed on the forge's own infrastructure",
+      "pipeline": true,
+      "worktree": true
     },
     "failed_after_abandoned": {
       "status": "needs_human",
@@ -229,10 +261,14 @@
         "gate_must_fix",
         "question",
         "stuck",
+        "stuck_on_ci",
         "cap",
+        "cap_on_ci",
         "conflict",
         "failed",
+        "failed_on_pipeline",
         "infra",
+        "infra_on_pipeline",
         "budget_item_cap",
         "budget_daily",
         "mr_closed",
@@ -254,10 +290,14 @@
         "gate_must_fix",
         "question",
         "stuck",
+        "stuck_on_ci",
         "cap",
+        "cap_on_ci",
         "conflict",
         "failed",
+        "failed_on_pipeline",
         "infra",
+        "infra_on_pipeline",
         "failed_after_abandoned",
         "budget_item_cap",
         "budget_daily",
@@ -278,10 +318,14 @@
         "gate_must_fix",
         "question",
         "stuck",
+        "stuck_on_ci",
         "cap",
+        "cap_on_ci",
         "conflict",
         "failed",
+        "failed_on_pipeline",
         "infra",
+        "infra_on_pipeline",
         "failed_after_abandoned",
         "mr_closed",
         "mr_closed_no_ref",
@@ -305,6 +349,18 @@
         "mr_closed"
       ]
     },
+    "rerun_ci": {
+      "path": "ci-rerun",
+      "body": {
+        "reason": "registry rate limit"
+      },
+      "takes": [
+        "stuck_on_ci",
+        "cap_on_ci",
+        "failed_on_pipeline",
+        "infra_on_pipeline"
+      ]
+    },
     "cancel": {
       "path": "cancel",
       "body": {
@@ -325,10 +381,14 @@
         "gate_must_fix",
         "question",
         "stuck",
+        "stuck_on_ci",
         "cap",
+        "cap_on_ci",
         "conflict",
         "failed",
+        "failed_on_pipeline",
         "infra",
+        "infra_on_pipeline",
         "failed_after_abandoned",
         "budget_item_cap",
         "budget_daily",
@@ -363,10 +423,14 @@
         "gate_must_fix",
         "question",
         "stuck",
+        "stuck_on_ci",
         "cap",
+        "cap_on_ci",
         "conflict",
         "failed",
+        "failed_on_pipeline",
         "infra",
+        "infra_on_pipeline",
         "failed_after_abandoned",
         "budget_item_cap",
         "budget_daily",
@@ -445,10 +509,14 @@
         "gate_must_fix",
         "question",
         "stuck",
+        "stuck_on_ci",
         "cap",
+        "cap_on_ci",
         "conflict",
         "failed",
+        "failed_on_pipeline",
         "infra",
+        "infra_on_pipeline",
         "failed_after_abandoned",
         "budget_item_cap",
         "budget_daily",

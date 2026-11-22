@@ -1,6 +1,8 @@
-<!-- Make it yours: the process is yours to change and share. Not on the
-     boards: the block template, its copy drawn from the docs each block links
-     to. Its two screenshots are the README's until they are retaken. -->
+<!-- Make it yours: the process is yours to change and share. The head is
+     the Head-customize board; the blocks aren't on the boards: the block
+     template, its copy drawn from the docs each block links to. Block 01's
+     picture is an animated demo (CustomizeDemo.vue); block 03's is a
+     screenshot, the README's until it is retaken. -->
 <script setup lang="ts">
 const demo = demoHref(useRuntimeConfig().app.baseURL)
 
@@ -17,6 +19,16 @@ const ADDON_REVIEW = [
   '  …',
   'Apply release@acme? [y/N]',
 ]
+// The head's picture: ~/.kraft/config/, path then note. `yours` is the one
+// file a person added.
+const CONFIG_FILES = [
+  { path: 'chains/', note: '' },
+  { path: 'default.yaml', note: 'The default chain', nested: true },
+  { path: 'with-lint.yaml', note: 'Extends default, adds a lint node', nested: true, yours: true },
+  { path: 'library.yaml', note: 'Tasks, with the agent and model for each' },
+  { path: 'harnesses.yaml', note: 'The agents Kraft can launch' },
+  { path: 'addons.yaml', note: 'The add-ons you installed' },
+]
 const LITE_INSTALL = [
   'claude plugin marketplace add itsOmidKarami/kraft',
   'claude plugin install kraft-lite@kraft',
@@ -28,8 +40,31 @@ const LITE_INSTALL = [
     <SitePageHead
       label="PRODUCT · MAKE IT YOURS"
       title="The process is yours to change."
+      top
     >
       Chains are files, so you can edit them, extend them and share them. Pick the agent and the model per task, or run a chain with no server at all.
+      <template #picture>
+        <figure class="s-figure">
+          <div class="s-headpanel s-files">
+            <p class="s-files-head">
+              <code>~/.kraft/config/</code>
+              <span class="s-headpanel-note">PLAIN YAML FILES</span>
+            </p>
+            <ul>
+              <li
+                v-for="f in CONFIG_FILES"
+                :key="f.path"
+                :class="{ 'is-nested': f.nested, 'is-yours': f.yours, 'is-folder': !f.note }"
+              >
+                <code>{{ f.path }}</code>
+                <span v-if="f.note">{{ f.note }}</span>
+                <b v-if="f.yours">YOURS</b>
+              </li>
+            </ul>
+          </div>
+          <figcaption>The process is a folder of plain YAML files. Kraft Lite reads the same chain files.</figcaption>
+        </figure>
+      </template>
     </SitePageHead>
 
     <SiteBlock
@@ -42,14 +77,7 @@ const LITE_INSTALL = [
       <p>A chain that extends <code>default</code> holds only what it changes. Every other node is read from <code>default</code>, so your chain keeps up with it.</p>
       <p>The Chains screen draws it as a graph. Review &amp; publish shows what changed and checks it before it takes effect.</p>
       <template #picture>
-        <SiteShot
-          src="/site/chain-extends.png"
-          :width="1230"
-          :height="700"
-          alt="The Chains screen: a chain that extends default, drawn as a graph, with its verification node marked overridden here and a security scan node marked added here"
-          :phone="{ src: '/site/chain-extends-phone.png', width: 340, height: 100 }"
-        />
-        <figcaption>A chain that extends <code>default</code>, drawn as a graph.</figcaption>
+        <CustomizeDemo />
       </template>
     </SiteBlock>
 

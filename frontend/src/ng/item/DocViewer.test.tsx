@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -143,6 +143,14 @@ describe("DocViewer", () => {
     const drawer = await screen.findByRole("dialog", { name: "Review notes" });
     expect(drawer).toHaveClass("dv-drawer");
     expect([...drawer.querySelectorAll(".dv-title, .dv-path, .dv-by")].map((c) => c.textContent)).toEqual(["Review notes", doc.path, "written by review › code_review › attempt 2"]);
+  });
+
+  // A <header> outside <main> is a banner landmark; the app's own header is the only one (#1116).
+  it("adds no banner landmark inside the open viewer", async () => {
+    stubFetch({ "GET /documents/d1": [200, doc] });
+    render(<DocViewer source={{ kind: "document", id: "d1" }} onClose={() => {}} />);
+    const drawer = await screen.findByRole("dialog", { name: "Review notes" });
+    expect(within(drawer).queryByRole("banner")).toBeNull();
   });
 
   describe("opened from search", () => {

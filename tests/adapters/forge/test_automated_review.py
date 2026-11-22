@@ -9,10 +9,11 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from kraft import config
 from kraft.adapters import forge
-from kraft.automated_review import AutomatedReview, as_reviewers
+from kraft.automated_review import BotReviewer, CheckReviewer, as_reviewers
 
 from .api_outputs import READ_BRANCH, pr_by_branch, pull_request
 from .nodes import FAIL
@@ -68,8 +69,8 @@ async def _review(cls, cli, tmp_path, routes, reviewer):
 
 GH = type("GH", (), {"name": "gh", "cls": forge.GhCli})
 GLAB = type("GLAB", (), {"name": "glab", "cls": forge.GlabCli})
-BOT = AutomatedReview(bot="coderabbitai")
-CHECK = AutomatedReview(check="review-bot")
+BOT = BotReviewer(bot="coderabbitai")
+CHECK = CheckReviewer(check="review-bot")
 
 
 # --- a bot reviewer ------------------------------------------------------------
@@ -186,6 +187,41 @@ async def test_a_withdrawn_bot_review_does_not_count(cli, tmp_path, backend, rou
     """Kraft-mlicj: a maintainer dismissing a bot's review is GitHub's "this no
     longer blocks". Its comments must not keep the item in a repair loop."""
     assert (await _review(backend, cli, tmp_path, routes, BOT)).state == expected
+
+
+@pytest.mark.parametrize(
+    "replies, reply_state, expected",
+    [
+        (True, "COMMENTED", ("calc.py:3: x is unused",)),
+        (False, "COMMENTED", ("calc.py:3: still unused",)),
+        (True, "CHANGES_REQUESTED", ("calc.py:3: still unused",)),
+    ],
+    ids=["gh-replies-on", "gh-replies-off", "gh-a-changes-requested-reply"],
+)
+async def test_a_reply_only_review_is_not_the_bot_s_review_where_kraft_replies(
+    cli, tmp_path, replies_on, replies, reply_state, expected
+):
+    """Where nothing collects there are no Kraft facts: a blank `COMMENTED` review
+    made only of replies is the bot answering a thread, so the review before it
+    stands. Only for a bot with replies on, and never a verdict."""
+    routes = {
+        READ_BRANCH: GH_PR,
+        GH_REVIEWS: json.dumps(
+            [
+                {**_gh_review("CHANGES_REQUESTED", id=50), "body": "fix calc"},
+                _gh_review(reply_state, id=51),
+            ]
+        ),
+        "api repos/{owner}/{repo}/pulls/7/reviews/50/comments": json.dumps(
+            [{"id": 9, "path": "calc.py", "line": 3, "body": "x is unused"}]
+        ),
+        GH_COMMENTS: json.dumps(
+            [{"id": 10, "path": "calc.py", "line": 3, "body": "still unused", "in_reply_to_id": 9}]
+        ),
+    }
+    reviewer = BotReviewer(bot="coderabbitai", replies=True) if replies else BOT
+
+    assert (await _review(GH, cli, tmp_path, routes, reviewer)).findings == expected
 
 
 # --- a check reviewer ----------------------------------------------------------
@@ -389,3 +425,52 @@ def test_a_reviewer_is_named_exactly_one_way_or_refused_at_load(tmp_path, block)
     repos.write_text(json.dumps({"repos": [{"path": "/r", "automated_review": block}]}))
     with pytest.raises(config.ConfigError, match="exactly one"):
         config.load_repos(repos)
+
+
+@pytest.mark.parametrize(
+    ("entry", "kind", "refused_at", "flag"),
+    [
+        ({"bot": "x", "check": None}, BotReviewer, None, False),
+        ({"check": "c", "bot": None}, CheckReviewer, None, False),
+        ({"check": "c", "replies": True}, None, ("check", "replies"), False),
+        ({"bot": "x", "replies": True}, None, ("bot", "replies"), False),
+        ({"bot": "x", "replies": True}, BotReviewer, None, True),
+        ({"bot": "x", "replies": False}, BotReviewer, None, False),
+        ({"check": "c", "replies": True}, None, ("check", "replies"), True),
+    ],
+    ids=[
+        "stored-bot-with-a-null-check",
+        "stored-check-with-a-null-bot",
+        "a-check-with-a-key-it-lacks",
+        "a-bot-with-replies-before-they-arrive",
+        "a-bot-with-replies",
+        "a-bot-with-replies-off",
+        "a-check-with-replies-after-they-arrive",
+    ],
+)
+def test_a_reviewer_entry_is_a_bot_or_a_check(request, entry, kind, refused_at, flag):
+    """`reviewer-entry-is-a-bot-or-a-check`: every stored list holds the other
+    name as null, and loads; a key is checked against the entry's own kind.
+    `replies-are-refused-until-the-conversation-arrives`: a bot's `replies: true`
+    is refused until the flag lifts it, a check never takes it, and a dump leaves
+    `replies: false` out."""
+    if flag:
+        request.getfixturevalue("replies_on")
+    if kind is None:
+        with pytest.raises(ValidationError) as refused:
+            as_reviewers([entry])
+        assert refused.value.errors()[0]["loc"] == refused_at
+        if refused_at == ("bot", "replies"):
+            assert "arrives in a later release" in str(refused.value)
+        return
+    (read,) = as_reviewers([entry])
+    assert type(read) is kind
+    assert read.model_dump() == {k: v for k, v in entry.items() if v not in (None, False)}
+    assert (read.bot, read.check) == (entry.get("bot"), entry.get("check"))
+
+
+def test_the_schema_does_not_offer_replies_before_they_arrive():
+    """`replies-are-refused-until-the-conversation-arrives`: VS Code never
+    suggests a key the loader refuses (item 3 lifts both)."""
+    for mode in ("validation", "serialization"):
+        assert "replies" not in BotReviewer.model_json_schema(mode=mode)["properties"]

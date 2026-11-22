@@ -297,8 +297,10 @@ def bot_feedback_source(db, run_dirs, work_item_id: str, node, round: int) -> Pa
     """The collection this pass of `node` has to read, or None when it holds
     nothing to read: the newest session of this node and round, begun since the
     run last restarted, of one of its `mr.automated_review` tasks (the review
-    wait's collect path wrote `bot_feedback.json` in its folder), unless every
-    reviewer in it has no summary, no open thread and no failed check.
+    wait's collect path wrote `bot_feedback.json` in its folder), unless nothing
+    in it could need a change: no open thread, no review check that did not pass
+    (an unfinished one included) and no summary or review with a non-blank body
+    (an approval's included, since some bots list items there).
 
     This node and this round, and nothing from before a restart: a collection
     from a pass before the last repair describes a head that is gone, and
@@ -335,7 +337,15 @@ def bot_feedback_source(db, run_dirs, work_item_id: str, node, round: int) -> Pa
     except (OSError, ValueError, KeyError, TypeError):
         return None
     said = any(
-        isinstance(r, dict) and (r.get("summaries") or r.get("threads") or r.get("check"))
+        isinstance(r, dict)
+        and (
+            r.get("threads")
+            or r.get("check")
+            or any(
+                isinstance(s, dict) and str(s.get("body") or "").strip()
+                for s in r.get("summaries") or ()
+            )
+        )
         for r in collected
     )
     return source if said else None
@@ -353,6 +363,32 @@ def bot_feedback(db, run_dirs, work_item_id: str, node, round: int, session_id: 
     own.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, own)
     return str(own)
+
+
+def collection(run_dirs, work_item_id: str, session_id: str) -> dict:
+    """The collection the session `session_id` was handed (its own copy), or {}."""
+    own = item_paths.session_files(run_dirs, work_item_id, session_id).bot_feedback
+    try:
+        data = json.loads(own.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def collected_threads(run_dirs, work_item_id: str, session_id: str) -> dict[str, dict]:
+    """The threads the session `session_id` was handed, by id, each with its
+    reviewer's key under `reviewer` and whether that reviewer takes replies under
+    `replies`. Empty when it was handed none."""
+    reviewers = collection(run_dirs, work_item_id, session_id).get("reviewers")
+    if not isinstance(reviewers, list):
+        return {}
+    return {
+        t["id"]: {**t, "reviewer": r.get("reviewer"), "replies": bool(r.get("replies"))}
+        for r in reviewers
+        if isinstance(r, dict)
+        for t in r.get("threads") or ()
+        if isinstance(t, dict) and isinstance(t.get("id"), str)
+    }
 
 
 def previous_attempt_note(previous_fix, *, run_dirs) -> str:
@@ -513,7 +549,10 @@ JUDGE_PROMPT = (
     "findings are shrinking, or this looks like real progress.\n"
     '  "verdict": "stop_needs_human"  -- the loop is not converging (the '
     "same findings recur, or new ones keep appearing as fast as old ones "
-    "are fixed); stop and hand this to a person.\n"
+    "are fixed); stop and hand this to a person. `concerns` becomes the stop "
+    "reason that person reads: open with one sentence saying what they should "
+    "do, then a blank line, then the evidence in short paragraphs with a blank "
+    "line between them.\n"
     '  "verdict": "stop_downgrade"    -- the remaining findings are real '
     "but not worth the cost of another cycle; let the chain proceed with "
     "them unresolved. `concerns` becomes the note a human sees at the "
@@ -534,6 +573,12 @@ def format_judge_history(history: list[dict]) -> str:
             )
         else:
             text = "clean"
+        if h.get("unmeasured"):
+            # Last read in an earlier round: an early end did not run their task.
+            text += "; not re-read this round: " + "; ".join(
+                f"[{f.severity}] {f.fingerprint} ({f.source_plugin}) {f.message}"
+                for f in h["unmeasured"]
+            )
         fix_note = (
             f" (that round's fix: {h['fix_result_path']})" if h.get("fix_result_path") else ""
         )

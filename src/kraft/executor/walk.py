@@ -4,7 +4,7 @@ import asyncio
 import json
 import math
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from kraft import builtins as _builtins
@@ -17,6 +17,7 @@ from kraft.adapters import forge as forge_mod
 from kraft.adapters import subprocess as _subprocess
 from kraft.executor import dispatch, entry, gates, prompts, stops
 from kraft.executor import read_only as _read_only
+from kraft.executor import replies as _replies
 from kraft.executor.context import (
     _ADVANCING,
     BASE_MOVED,
@@ -25,6 +26,7 @@ from kraft.executor.context import (
     CONFIG_ERROR,
     CONFLICT,
     CONFLICT_RESOLVED,
+    ENDED_EARLY,
     ESCALATION_COMMITTED,
     INFRA_STOP,
     LANDED_UNREVIEWED,
@@ -432,14 +434,40 @@ def _task_cause(
     # memory limit killed it, or a `just` scope's recipe is missing, is the
     # cause; the task's first line is not.
     # So is the forge's `rebase onto <base> failed: <git's words>` (`forge.run`),
-    # which follows a pipeline's own first line.
+    # which follows a pipeline's own first line, and the `CI is red: ...` line a
+    # CI-watching review wait leads an observation with: its session's log is
+    # appended to, so that line is not the file's first.
     own = [
         ln
         for ln in lines[1:]
-        if ln.startswith((_subprocess.OOM_LINE, dispatch.NO_RECIPE_LINE, "rebase onto "))
+        if ln.startswith(
+            (
+                _subprocess.OOM_LINE,
+                dispatch.NO_RECIPE_LINE,
+                "rebase onto ",
+                forge_mod.run.CI_RED_LINE,
+            )
+        )
     ]
     line = own[-1] if own else next(iter(lines), "")
     return line if len(line) <= _STOP_CAUSE_MAX else line[: _STOP_CAUSE_MAX - 1] + "…"
+
+
+def _named_for_stop(db, work_item_id: str, node: ResolvedNode, task: ResolvedTask) -> str:
+    """`task` as a stop's reason names it. A review wait that watches CI and
+    failed on a red pipeline is named as the node's CI wait: the failure is
+    CI's, and a person reading "the review wait failed" would look in the wrong
+    place (`a-stop-on-red-ci-the-review-wait-saw-names-the-ci-wait`)."""
+    if (
+        isinstance(task.task, ForgeTask)
+        and task.task.watch_ci
+        and _task_cause(db, work_item_id, node, task, "failed").startswith(
+            forge_mod.run.CI_RED_LINE
+        )
+        and (ci := node.ci_wait_after(task.path)) is not None
+    ):
+        return prompts.named_with_kind(ci)
+    return prompts.named_with_kind(task)
 
 
 #: The end of an infra stop's reason for a failed in-process task, by the
@@ -1976,7 +2004,7 @@ async def _walk_node_once(
                 # otherwise. Naming each failed task's kind here is the
                 # cheapest way to tell them apart without guessing whether
                 # *this* retry's steer would land.
-                named = ", ".join(prompts.named_with_kind(t) for t in failed)
+                named = ", ".join(_named_for_stop(db, work_item_id, node, t) for t in failed)
                 reason = f"task failed in node {node.id}: {named}"
                 reason += _in_process_causes(db, work_item_id, node, failed)
                 scopes = _failed_scopes(db, work_item_id, node, failed, launch)
@@ -1996,6 +2024,10 @@ async def _walk_node_once(
                     facts=facts or None,
                     escalatable=not _red_pipeline_only(failed),
                 )
+        # Only records `no_fix_loop` when a bot has replies on: nothing here can act.
+        await _replies.posting_point(
+            db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+        )
         await node_runs.completed(
             db, Path(worktree) if worktree else None, work_item_id, node.id, run_dirs=run_dirs
         )
@@ -2027,6 +2059,12 @@ async def _walk_node_once(
     # and 823s of a 3600s wall cap the judge then stopped the loop over.
     counter_row = db.read(lambda c: store.read_counter(c, work_item_id, key))
     round = counter_row["count"] if counter_row is not None else 0
+    if loop.early:
+        # A parked measurement continues at its own round, which the counter
+        # doesn't know when it is the re-measure after `on_failure` (round -1).
+        open_at = dispatch.open_measurement(db, work_item_id, node.id)
+        if open_at is not None:
+            round = open_at["round"]
     # One repair per call to `walk_node` -- exactly one per entry into the
     # node (a fresh call on every re-entry via `run_once`'s loop, a crash
     # resume, or the wait scheduler).
@@ -2047,6 +2085,18 @@ async def _walk_node_once(
     # What a doubted repair said, for the first cycle only (Kraft-yi005): it
     # makes the judge due then, and is cleared with `_first_iteration`.
     repair_doubted: list[str] = []
+
+    async def _continue() -> None:
+        """The fix loop did not start on a measurement that ended early: reopen it
+        at the next step, same round, to run only the steps that did not run."""
+        nonlocal resume_step
+        await db.write(
+            lambda c: store.begin_measurement(
+                c, work_item_id, node.id, round, since=measuring["since"]
+            )
+        )
+        resume_step = measuring["step"] + 1
+
     while True:
         verdict, failed, excs = await dispatch.measure_node(
             db,
@@ -2064,6 +2114,11 @@ async def _walk_node_once(
             spent=spent,
             preserve=preserve,
         )
+        # Before the walk acts on the verdict: the fix loop never starts ahead of
+        # the replies it may answer. Not after a pause (a person said stop) or a
+        # read-only violation (the triage changed the tree: its replies are not trusted).
+        if verdict not in ("paused", READ_ONLY_VIOLATED):
+            await _replies.posting_point(db, run_dirs, work_item_id, node, row, worktree, launch)
         resume_step = 0
         preserve = frozenset()
         if verdict == BASE_MOVED:
@@ -2144,6 +2199,11 @@ async def _walk_node_once(
                 loop_severities=loop_severities,
                 spent=spent,
             )
+            # A doubted repair re-measured nothing: no posting point.
+            if r_verdict not in (REPAIR_DOUBTED, "paused", READ_ONLY_VIOLATED):
+                await _replies.posting_point(
+                    db, run_dirs, work_item_id, node, row, worktree, launch
+                )
             # `recover_node`'s re-measure is a real `dispatch.measure_node` call
             # against the node's own tasks again -- every sentinel that call can
             # produce for the ordinary top-of-loop measure can just as well come
@@ -2175,6 +2235,11 @@ async def _walk_node_once(
                     loop_severities=loop_severities,
                 )
             if r_verdict == "ok":
+                if loop.early:
+                    await db.write(lambda c: store.end_measurement(c, work_item_id))
+                await _replies.posting_point(
+                    db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+                )
                 await node_runs.completed(
                     db,
                     Path(worktree) if worktree else None,
@@ -2192,9 +2257,11 @@ async def _walk_node_once(
                 # repair's concerns before the first cycle is paid for.
                 repair_doubted = dispatch.repair_doubts(db, work_item_id, node, r_failed)
             else:
-                # Only "failed" reaches here, and that fall-through is deliberate:
-                # the repair ran, didn't resolve things, and the ordinary paid fix
-                # cycle below should now see the failure for what it actually is.
+                # Only "failed" and ENDED_EARLY reach here, and that fall-through is
+                # deliberate: the repair ran, didn't resolve things, and the ordinary
+                # paid fix cycle below should now see the failure for what it actually
+                # is. An early end of the re-measure goes to the fix loop at round -1,
+                # as a failure does, and never back to `on_failure`.
                 #
                 # The repair's own re-measure just wrote its findings/session rows
                 # under `_REPAIR_ROUND`, not the `round` this loop was on when it
@@ -2204,9 +2271,27 @@ async def _walk_node_once(
                 # rows instead of the fresher re-measure this repair just produced.
                 verdict, failed, excs, round = r_verdict, r_failed, r_excs, _REPAIR_ROUND
 
-        previous_found, fix_ran, previous_head = dispatch.last_measurement(
-            db, work_item_id, node.id
+        # Read now: the judge reassigns `verdict`.
+        ended_early = verdict == ENDED_EARLY
+        # Read before the record is written and the measurement closed: its step
+        # and start are what a declined early start continues from.
+        measuring = dispatch.open_measurement(db, work_item_id, node.id) if loop.early else None
+        latest, fix_ran = dispatch.last_measured(db, work_item_id, node.id)
+        # The record a continued measurement amends is the one it wrote since it began.
+        amends = (
+            latest["seq"] if measuring and latest and latest["seq"] > measuring["since"] else None
         )
+        if amends is not None:
+            # The previous measurement is the one before that record, not the record itself.
+            previous, fix_ran = dispatch.last_measured(db, work_item_id, node.id, before=amends)
+        else:
+            previous = latest
+        previous_found = (
+            [_findings.from_payload(f) for f in previous["payload"].get("findings", [])]
+            if previous is not None
+            else None
+        )
+        previous_head = previous["payload"].get("head_sha") if previous is not None else None
         head_sha = _config.git_read(Path(worktree), "rev-parse", "HEAD")
         # The tags this loop's own checks already meant: the *eligible* subset of
         # the last measurement. `last_measurement` returns whole findings now
@@ -2258,7 +2343,13 @@ async def _walk_node_once(
         dropped_findings: dict[str, int] = {}
         has_session: dict[str, bool] = {}
         found, reported_hooks = dispatch.collect_findings(
-            db, work_item_id, node, round, dropped=dropped_findings, has_session=has_session
+            db,
+            work_item_id,
+            node,
+            round,
+            dropped=dropped_findings,
+            has_session=has_session,
+            run_dirs=run_dirs,
         )
         # A `same_as` is only believable for a tag this round's reviewer was
         # actually shown. An invented or stale tag would collapse two distinct
@@ -2266,22 +2357,47 @@ async def _walk_node_once(
         # (Kraft-s7c04.2). A reviewer is shown the tags of this node's last
         # measurement when its task declares `inputs: [carried_findings]`
         # (`dispatch.dispatch_node`), which is exactly `previous_found`.
+        # What the previous measurement did not re-read keeps its identity and
+        # severity (`unmeasured_findings`), but was never asked of the fixer: it
+        # feeds `known` and the severity floor, never `previous_prints`.
+        previous_unmeasured = [
+            _findings.from_payload(u)
+            for u in (previous["payload"].get("unmeasured", []) if previous else [])
+        ]
         found = _findings.resolve_identity(
-            found, known={f.fingerprint for f in previous_found or []}
+            found,
+            known={f.fingerprint for f in [*(previous_found or []), *previous_unmeasured]},
         )
+        if loop.early:
+            # What the fix loop declined on this commit is not collected again: not
+            # recorded, not eligible, not in the list to fix, not before the judge.
+            declined = dispatch.declined_fingerprints(db, work_item_id, node.id, head_sha)
+            found = [f for f in found if f.fingerprint not in declined]
         # Parallel to `found`, never a dict keyed on fingerprint: two findings in
         # one round can share a tag if the reviewer pointed both at the same
         # `same_as`, and a dict would silently drop one of them.
         as_reported = [f.severity for f in found]
         found = _carry_severity(
             found,
-            previous_found or [],
+            [*(previous_found or []), *previous_unmeasured],
             # Both known and equal, never "both None": a pair of unreadable heads
             # is not evidence that nothing moved.
             unchanged_tree=head_sha is not None and head_sha == previous_head,
         )
         eligible = [f for f in found if f.severity in policy.loop_severities]
         prints = sorted({f.fingerprint for f in eligible})
+        # The tasks an early end skipped keep their last findings, apart from this
+        # measurement's own (`dispatch.unmeasured_findings`).
+        unmeasured = (
+            dispatch.unmeasured_findings(
+                previous["payload"] if previous is not None else None,
+                sorted(p for p, ran in has_session.items() if ran),
+                sorted(p for p, ran in has_session.items() if not ran),
+                found,
+            )
+            if ended_early
+            else []
+        )
         # Built here rather than inside the lambda, the same way `judge_payload`
         # below is: every name a deferred lambda reads out of this loop has to be
         # bound at definition time or it sees the next iteration's value.
@@ -2302,19 +2418,37 @@ async def _walk_node_once(
             "measured_tasks": sorted(p for p, ran in has_session.items() if ran),
             "unmeasured_tasks": sorted(p for p, ran in has_session.items() if not ran),
             "findings": [
-                {**asdict(f), **({"reported_severity": s} if s != f.severity else {})}
+                {**_findings.payload_of(f), **({"reported_severity": s} if s != f.severity else {})}
                 for f, s in zip(found, as_reported, strict=True)
             ],
             "fingerprints": prints,
+            # Only on an early end, and only when it left some: every other record
+            # keeps today's shape. Apart from `findings`, so never eligible or fixed.
+            **({"unmeasured": unmeasured} if unmeasured else {}),
             # Only when the parser threw entries away as malformed: a reviewer
             # that writes the schema wrong must not read as one that found nothing.
             **({"dropped": dropped_findings} if dropped_findings else {}),
         }
-        await db.write(
-            lambda c, payload=measured_payload: events.append(
-                c, work_item_id, ChainEvent.FINDINGS_MEASURED, payload
-            )
+        # The whole-set check below compares like with like: a previous measurement
+        # that read other tasks says nothing about this one's set being unchanged.
+        read_other = (
+            loop.early
+            and previous is not None
+            and previous["payload"].get("measured_tasks") != measured_payload["measured_tasks"]
         )
+        same_set = prints == previous_prints and not read_other
+        if amends is not None:
+            await db.write(
+                lambda c, seq=amends, payload=measured_payload: events.amend(c, seq, payload)
+            )
+        else:
+            await db.write(
+                lambda c, payload=measured_payload: events.append(
+                    c, work_item_id, ChainEvent.FINDINGS_MEASURED, payload
+                )
+            )
+        if loop.early:
+            await db.write(lambda c: store.end_measurement(c, work_item_id))
 
         # A failed task that produced no findings at all is still non-clean: the
         # findings list refines *why* a task failed, it does not define failure.
@@ -2322,6 +2456,12 @@ async def _walk_node_once(
         enters_loop = bool(eligible) or bool(blind_failures)
 
         if not enters_loop:
+            if ended_early:
+                await _continue()
+                continue
+            await _replies.posting_point(
+                db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+            )
             await node_runs.completed(
                 db, Path(worktree) if worktree else None, work_item_id, node.id, run_dirs=run_dirs
             )
@@ -2363,7 +2503,11 @@ async def _walk_node_once(
             and all(f.source_plugin in in_process_blind for f in eligible)
         ):
             named = ", ".join(
-                sorted(prompts.named_with_kind(t) for t in blind_failures if _in_process(t))
+                sorted(
+                    _named_for_stop(db, work_item_id, node, t)
+                    for t in blind_failures
+                    if _in_process(t)
+                )
             )
             # A forge task that answered `conflict` (its forced rebase hit one)
             # is the branch's to resolve, not the daemon's: a conflict stop, in
@@ -2449,7 +2593,11 @@ async def _walk_node_once(
                 "cycle": round,
                 "verdict": verdict,
                 "reasoning": reasoning,
-                "findings": [asdict(f) for f in eligible],
+                "findings": [_findings.payload_of(f) for f in eligible],
+                # A `stop_downgrade` with `ended_early` holds for this commit
+                # (`dispatch.declined_fingerprints`): the judge isn't paid again.
+                "head_sha": head_sha,
+                "ended_early": ended_early,
             }
             await db.write(
                 lambda c, payload=judge_payload: events.append(
@@ -2470,6 +2618,15 @@ async def _walk_node_once(
             # on the blind subset. Only a task with no failure at all can be
             # treated as clean here.
             if verdict == "stop_downgrade" and not failed:
+                if ended_early:
+                    # The loop doesn't start on what ended the measurement: it goes on
+                    # with the steps that didn't run, and the verdict event below
+                    # keeps those findings from coming back on this commit.
+                    await _continue()
+                    continue
+                await _replies.posting_point(
+                    db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
+                )
                 await node_runs.completed(
                     db,
                     Path(worktree) if worktree else None,
@@ -2529,7 +2686,7 @@ async def _walk_node_once(
             # so the common (non-stuck) path pays no extra history read.
             stuck_fp = (
                 None
-                if prints == previous_prints
+                if same_set
                 else dispatch.stuck_fingerprint(
                     dispatch.judge_history(
                         db,
@@ -2541,7 +2698,7 @@ async def _walk_node_once(
                     _FINGERPRINT_STREAK_LIMIT,
                 )
             )
-            if prints == previous_prints or stuck_fp:
+            if same_set or stuck_fp:
                 reason = (
                     f"stuck: {len(prints)} finding(s) unchanged across cycle {count - 1}"
                     if stuck_fp is None

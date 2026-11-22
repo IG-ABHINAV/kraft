@@ -18,7 +18,13 @@ import yaml
 
 from kraft.policy import TemplatePolicyOverride
 from kraft.templates.library import Namespace, _merge
-from kraft.templates.models import AUTO_REVIEW_SEGMENT, JUDGE_SEGMENT, MAIN_STEP, PATH_SEPARATOR
+from kraft.templates.models import (
+    AUTO_REVIEW_SEGMENT,
+    JUDGE_SEGMENT,
+    MAIN_STEP,
+    PATH_SEPARATOR,
+    lift_tasks,
+)
 
 CHAIN = "chain"
 LIBRARY = "library"
@@ -37,19 +43,19 @@ NODE_KEYS = (
 TASK_KEYS = (
     "id", "kind", "extends", "icon", "harness", "ref", "command", "target", "prompt", "skill",
     "produces", "profile", "model", "effort", "inputs", "fallback", "outputs", "reads", "steering",
-    "scope", "execution", "suite", "wait", "reviewers", "pipeline", "policy", "skippable",
-    "on_failure",
+    "scope", "execution", "suite", "wait", "config", "policy", "skippable", "on_failure",
 )  # fmt: skip
 STEP_KEYS = (
     "id", "extends", "runner", "icon", "tasks", "on_failure", "policy", "skippable", "read_only",
 )  # fmt: skip
-SHAPE_KEYS = ("tasks", "steps", JUDGE_SEGMENT, "max_attempts", "read_only")
+SHAPE_KEYS = ("tasks", "steps", JUDGE_SEGMENT, "max_attempts", "early", "read_only")
 #: The order inside a nested mapping, by its key.
 NESTED_KEYS = {
     "policy": tuple(TemplatePolicyOverride.model_fields),
     "on_base_changed": ("restart_from", "on_conflict"),
     "on_merge_rejected": ("restart_from", "repair"),
-    "wait": ("grace_period", "polling"),
+    "wait": ("polling",),
+    "config": ("reviewers", "watch_ci", "grace_period", "pipeline"),
     "polling": ("initial_interval", "max_interval"),
     "outputs": ("files", "variables"),
 }
@@ -78,9 +84,12 @@ def load(text: str | None) -> object:
 
 
 def normalise(data: object) -> object:
-    """`data` with the shorthand normalised in place, as `load` does."""
+    """`data` with the shorthand normalised and every flat forge key under
+    `config`, in place, as `load` does. The lift is silent: this knows no
+    file, and the server warns when it loads the same one."""
     if isinstance(data, dict):
         _walk(data, _normalise)
+        lift_tasks(data)
     return data
 
 

@@ -51,17 +51,27 @@ def _node_overrides(pairs: list[str]) -> dict | None:
     return overrides or None
 
 
+#: What may follow `bot:LOGIN`, each after a `:` (Part 2's third item adds `resolve=kraft`).
+_BOT_OPTIONS = {"replies": ("replies", True)}
+
+
 def _reviewer(raw: str) -> dict | None:
-    """One `--reviewer`: `bot:LOGIN` or `check:NAME`, or `none` (None), which
-    alone sends `[]`, no reviewer expected."""
+    """One `--reviewer`: `bot:LOGIN[:replies]` or `check:NAME`, or `none` (None),
+    which alone sends `[]`, no reviewer expected. Options are parsed after a bot's
+    login only: a check's name may hold `:`."""
     if raw == "none":
         return None
     kind, sep, name = raw.partition(":")
+    # Not advertised while the server refuses it (item 3 names `:replies` here).
+    usage = f"--reviewer takes bot:LOGIN, check:NAME or none, not {raw!r}"
     if kind not in ("bot", "check") or not (sep and name):
-        raise argparse.ArgumentTypeError(
-            f"--reviewer takes bot:LOGIN, check:NAME or none, not {raw!r}"
-        )
-    return {kind: name}
+        raise argparse.ArgumentTypeError(usage)
+    if kind == "check":
+        return {"check": name}
+    login, *options = name.split(":")
+    if not login or any(o not in _BOT_OPTIONS for o in options):
+        raise argparse.ArgumentTypeError(usage)
+    return {"bot": login, **dict(_BOT_OPTIONS[o] for o in options)}
 
 
 def _budget(raw: str) -> float | None:
@@ -390,7 +400,14 @@ def _cmd_escalate(ns: argparse.Namespace) -> None:
 
 
 def _cmd_rerun_ci(ns: argparse.Namespace) -> None:
-    common.emit(asyncio.run(client.ci_rerun(ns.reason, ns.id)), common._render_action, ns.json)
+    result = asyncio.run(client.ci_rerun(ns.reason, ns.id))
+    # A person's re-run answers as the retry it ends in; a repair's names the jobs.
+    said = (
+        common._render_action
+        if "reran" in result
+        else common.item_action("retried {id}", small=answers.retried)
+    )
+    common.emit(result, said, ns.json)
 
 
 def _cmd_mr_label(ns: argparse.Namespace) -> None:
@@ -804,7 +821,8 @@ def _add_item(subs, common: argparse.ArgumentParser) -> None:
     rerun_ci = subs.add_parser(
         "rerun-ci",
         parents=[common],
-        help="re-run the CI jobs that failed outside the code (a fix-loop repair)",
+        help="re-run the CI jobs that failed outside the code: a fix-loop repair, or a "
+        "person on a fix loop or a ci.pipeline wait stopped for them, which then retries",
     )
     rerun_ci.add_argument("id", nargs="?")
     rerun_ci.add_argument(

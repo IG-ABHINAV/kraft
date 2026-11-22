@@ -38,6 +38,7 @@ from kraft.adapters.forge.models import (
     QueueRead,
     failure_cause,
 )
+from kraft.adapters.forge.replies import facts, record
 from kraft.automated_review import Reviewers
 from kraft.config import ConfigError, load_repos
 from kraft.paths import config_dir
@@ -953,6 +954,9 @@ class WaitNote:
     #: What the wait is about, kept in its start: a wait open about something
     #: else ends `superseded` (`waits.observe`).
     started_extra: dict = field(default_factory=dict)
+    #: The instant a pending observation times out, when it is not the wait's
+    #: start plus its timeout: a CI-watching review wait counts from the push.
+    deadline: datetime | None = None
 
 
 _PIPELINE_ID = re.compile(r"[0-9]+")
@@ -967,6 +971,12 @@ def _cause_first(cause: str, log: str) -> str:
     """`log` under `cause` as its first line: the stop's task cause is the
     first non-empty line (`walk._task_cause`)."""
     return f"{cause}\n{log}"
+
+
+#: The line a CI-watching review wait leads its log with when it reads a red
+#: pipeline. A reused wait session's log is appended to, so the cause cannot
+#: rely on being the file's first line: `walk._task_cause` picks this prefix out.
+CI_RED_LINE = "CI is red: "
 
 
 async def _pipeline_stop(db, work_item_id: str, node_id: str, cause: str) -> str:
@@ -1089,6 +1099,7 @@ async def _collect_review(
     run_dirs,
     session_id: str,
     round: int,
+    watch_ci: bool = False,
 ) -> tuple[str, str, WaitNote | None]:
     """One check of the review wait on its collect path: read every reviewer,
     decide whether each has finished with the head (`settle.decide`), and once
@@ -1107,16 +1118,29 @@ async def _collect_review(
                 {"node_id": node_id, "task": hook_point, "repo": str(orig_repo)},
             )
         )
-        _write_collection(destination, head, round, [])
+        _write_collection(destination, head, round, [], None)
         return "automated review: no reviewer configured; nothing to collect\n", "done", None
+    kraft = None
+    if any(r.replies for r in reviewers):
+        # Read once per wait and kept in its memory: the head wait needs Kraft's notes
+        # from its first check. Unreadable, only the record says which notes are Kraft's.
+        wait = db.read(lambda c: waits.open_wait(c, work_item_id, hook_point))
+        viewer = ((wait.last if wait is not None else None) or {}).get("viewer")
+        if viewer is None:
+            try:
+                viewer = await forge.viewer(repo=repo)
+            except ForgeError:
+                viewer = None
+        posted = db.read(lambda c: record.posted_hashes(record.read(c, work_item_id)))
+        kraft = facts.Kraft(viewer, work_item_id, posted)
     log, status, note, collection = await _settle_review(
         forge, db, repo=repo, orig_repo=orig_repo, branch=branch, head=head,
         work_item_id=work_item_id, node_id=node_id, hook_point=hook_point,
         reviewers=reviewers,
-        bounds=bounds, grace=grace,
+        bounds=bounds, grace=grace, watch_ci=watch_ci, kraft=kraft,
     )  # fmt: skip
     if collection is not None:
-        _write_collection(destination, head, round, collection)
+        _write_collection(destination, head, round, collection, note.now)
     return log, status, note
 
 
@@ -1136,38 +1160,68 @@ async def _settle_review(
     grace: timedelta,
     scope: str | None = None,
     mount: str | None = None,
+    watch_ci: bool = False,
+    kraft: facts.Kraft | None = None,
 ) -> tuple[str, str, WaitNote, list[dict] | None]:
     """One check of whether every reviewer has finished with `head`
     (`settle.decide`): `waiting` with no collection yet, or `done` with what
     each reviewer said. A multi-repo item's repositories each keep their own
-    memory in the wait, under `scope`."""
+    memory in the wait, under `scope`. `kraft`, given only on the collect path
+    with a replies-on bot, leaves Kraft's conversation out and is kept in the
+    wait (its viewer)."""
     # One reading of the clock, so the deadline this tests and the one
     # `waits.observe` tests are the same instant.
     now = waits.now()
     wait = db.read(lambda c: waits.open_wait(c, work_item_id, hook_point))
-    deadline = (
-        datetime.fromisoformat(wait.started["started_at"]) + bounds.timeout
-        if wait is not None
-        else now + bounds.timeout
-    )
-    timed_out = now >= deadline
     if not head:
         raise ForgeError(f"cannot read the head of {branch} in {repo}")
     since = db.read(lambda c: waits.pushed_at(c, work_item_id, repo=str(orig_repo), sha=head))
     if since is None:
         since = await git.committed_at(repo, head)
+    if watch_ci:
+        # "If it didn't post a review after the push in 10 mins, it's done"
+        # (`review-wait-watching-ci-counts-its-limit-from-the-push`): the time
+        # already gone on this head counts, whenever this wait started.
+        deadline = since + bounds.timeout
+    elif wait is not None:
+        deadline = datetime.fromisoformat(wait.started["started_at"]) + bounds.timeout
+    else:
+        deadline = now + bounds.timeout
+    timed_out = now >= deadline
+    # Passed only when given: several tests replace `reviewer_feedback` with a
+    # function that takes no `kraft`.
     feedback = await forge.reviewer_feedback(
-        repo=repo, branch=branch, reviewers=reviewers, since=since
+        repo=repo,
+        branch=branch,
+        reviewers=reviewers,
+        since=since,
+        **({"kraft": kraft} if kraft is not None else {}),
     )
     memory = ((wait.last if wait is not None else None) or {}).get("memory", {})
     if scope is not None:
         memory = memory.get(scope, {})
     decided = settle.decide(
-        feedback, since=since, now=now, grace=grace, memory=memory, timed_out=timed_out
+        feedback,
+        since=since,
+        now=now,
+        grace=grace,
+        memory=memory,
+        timed_out=timed_out,
+        kraft=kraft,
     )
+    kept = {
+        "memory": decided.memory,
+        **({"viewer": kraft.viewer} if kraft and kraft.viewer else {}),
+    }
     if decided.state == "pending":
         log = f"automated review: waiting for the reviewers to finish with {head[:7]}\n"
-        note = WaitNote(decided.next_at, {"memory": decided.memory}, False, now)
+        note = WaitNote(
+            decided.next_at,
+            kept,
+            False,
+            now,
+            deadline=deadline if watch_ci else None,
+        )
         return log, "waiting", note, None
     log = f"automated review: {len(reviewers)} reviewer(s) finished with {head[:7]}\n"
     heard, silent = settle.heard_and_silent(reviewers, decided.memory)
@@ -1177,7 +1231,7 @@ async def _settle_review(
         payload = {"node_id": node_id, "task": hook_point, "repo": str(orig_repo)}
         payload |= {"mount": mount, "head": head, "heard": heard, "silent": silent}
         await db.write(lambda c: _record_settled(c, work_item_id, payload))
-    note = WaitNote(None, {"memory": decided.memory}, timed_out, now)
+    note = WaitNote(None, kept, timed_out, now, deadline=deadline if watch_ci else None)
     return log, "done", note, decided.collection
 
 
@@ -1248,12 +1302,20 @@ def _as_findings(messages: Iterable[str]) -> list[dict]:
     ]
 
 
-def _write_collection(destination: Path, head: str, round: int, collection: list[dict]) -> None:
-    """The collection the reading task is handed (`AgentInput.BOT_FEEDBACK`)."""
+def _write_collection(
+    destination: Path, head: str, round: int, collection: list[dict], read_at: datetime | None
+) -> None:
+    """The collection the reading task is handed (`AgentInput.BOT_FEEDBACK`).
+    `read_at` is the instant the wait decided the bots had finished; None when
+    nothing was read."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps({"head": head, "round": round, "reviewers": collection}, indent=2) + "\n"
-    )
+    body = {
+        "head": head,
+        "round": round,
+        "read_at": read_at.isoformat() if read_at else None,
+        "reviewers": collection,
+    }
+    destination.write_text(json.dumps(body, indent=2) + "\n")
 
 
 async def _run_one(
@@ -1305,6 +1367,9 @@ async def _run_one(
     bounds: WaitBounds = DEFAULT_WAIT,
     session_id: str = "",
     round: int = 0,
+    #: The review wait watches CI (`ForgeTask.watch_ci`): its limit counts from
+    #: the push of the head it is about, not from the wait's start.
+    watch_ci: bool = False,
     #: `pipeline_wait`'s pipeline id (`ForgeTask.pipeline`), the writer paths of
     #: its `reads`, and the variables each declares now.
     pipeline: str | None = None,
@@ -1567,6 +1632,7 @@ async def _run_one(
                 run_dirs=run_dirs,
                 session_id=session_id,
                 round=round,
+                watch_ci=watch_ci,
             )
         case "automated_review" if any(r.bot is not None for r in reviewers):
             # Not collecting (nothing in the node reads it, or a multi-repo
@@ -1577,7 +1643,7 @@ async def _run_one(
                 forge, db, repo=repo, orig_repo=orig_repo, branch=branch, head=head,
                 work_item_id=work_item_id, node_id=node_id, hook_point=hook_point,
                 reviewers=reviewers,
-                bounds=bounds, grace=grace, scope=scope, mount=mount,
+                bounds=bounds, grace=grace, scope=scope, mount=mount, watch_ci=watch_ci,
             )  # fmt: skip
             if collection is not None:
                 found, unread, unfinished = _verdict(collection, mount)
@@ -2312,6 +2378,89 @@ def _trace_line(log: str) -> int | None:
     return int(m.group(2)) if m else None
 
 
+async def _watch_ci(
+    db,
+    targets: list[tuple[Forge, Path, Path]],
+    *,
+    branch: str,
+    work_item_id: str,
+    node_id: str,
+    ci_task: str,
+    ci_checks: bool,
+    multi: bool,
+) -> tuple[str, str | None, list[dict] | None]:
+    """What a review wait that sets `watch_ci` does before it reads its bots:
+    push each repository's branch and read its pipeline, and end on a settled
+    red. Each target is `(forge, repo, orig_repo)`; returns `(log, status,
+    findings)`, where a `status` of None lets the bots' part run.
+
+    It reads with the CI wait's own reader and verdict (`ci.render_ci`) and none
+    of the CI wait's side effects: no rebase, no infrastructure retry, no
+    skip-CI record, no pipeline pin. The node's `mr.ci` task owns CI, so a red
+    read is reported as that task's finding (`ci_task`), with its source and
+    fingerprint (`review-wait-red-pipeline-is-the-ci-wait-s-finding`)."""
+    log = ""
+
+    def tag(repo: Path) -> str:
+        return f"[{repo.name}] " if multi else ""
+
+    # A merge request already merged (the CI wait's own guard, `ci_poll`): its
+    # branch is usually deleted with it, so a push would die against the stale
+    # lease, and there is nothing left to check. Per repository: the others go on.
+    live: list[tuple[Forge, Path, Path]] = []
+    for forge, repo, orig_repo in targets:
+        existing = await forge.find_mr(repo=repo, branch=branch)
+        if existing is not None and existing.state == "merged":
+            log += f"{tag(repo)}already merged (!{existing.number}); nothing to check\n"
+            continue
+        live.append((forge, repo, orig_repo))
+    if not live:
+        return log, "done", None
+    # Every repository's branch first, so the bots' part, which stops at the
+    # first target not done, finds each pushed. A push error is not caught here:
+    # it fails the wait as the CI wait's does.
+    for forge, repo, orig_repo in live:
+        await forge.push(repo=repo, branch=branch)
+        await _record_push(
+            db,
+            work_item_id=work_item_id,
+            node_id=node_id,
+            orig_repo=orig_repo,
+            repo=repo,
+            branch=branch,
+        )
+    if not ci_checks:
+        return log, None, None
+    # Then every pipeline, in target order (deepest first, as the CI wait reads
+    # them), stopping at the first red or conflict.
+    for forge, repo, _ in live:
+        head = await git._head_sha(repo, branch)
+        try:
+            read = await forge.ci_status(repo=repo, mr=MR(number=0, url=""), branch=branch)
+            rendered, verdict = await ci.render_ci(
+                read, forge=forge, repo=repo, branch=branch, head_sha=head
+            )
+        except ForgeError as exc:
+            if exc.reason == "rate_limited":
+                raise
+            log += f"{tag(repo)}pipeline not read ({exc}); the CI wait reads it\n"
+            continue
+        if verdict == "failed":
+            names = ", ".join(j.name for j in read.failed_jobs)
+            cause = f"{CI_RED_LINE}{names} failed on {head[:7]}" + (
+                f" in {repo.name}" if multi else ""
+            )
+            # CI findings stay single-repo, as the CI wait's do (`run_task`).
+            return (
+                _cause_first(cause, log + tag(repo) + rendered),
+                "failed",
+                None if multi else _job_findings(read, rendered, ci_task),
+            )
+        if verdict == "conflict":
+            return log + tag(repo) + rendered + "the CI wait rebases it\n", "done", None
+    return log, None, None
+
+
 async def run_task(
     db,
     run_dirs,
@@ -2367,6 +2516,12 @@ async def run_task(
     reads_feedback: bool = False,
     #: The review wait's grace period (`ForgeTask.grace`).
     grace: timedelta = DEFAULT_GRACE,
+    #: `ForgeTask.watch_ci`: the review wait also pushes and reads CI, and ends
+    #: on a red pipeline, as `ci_task`'s finding.
+    watch_ci: bool = False,
+    #: The node's own `mr.ci` task path, the owner of a CI finding the review
+    #: wait reports (`ResolvedNode.ci_wait_after`).
+    ci_task: str | None = None,
     #: `ci.pipeline`'s pipeline id (`ForgeTask.pipeline`), the writer paths of
     #: its `reads`, and the variables each declares now.
     pipeline: str | None = None,
@@ -2610,6 +2765,27 @@ async def run_task(
             # -- whether or not root itself has anything to publish.
             covered = {Path(r["repo_path"]).resolve() for r in rows if r["role"] == "submodule"}
             await git._assert_submodules_covered(repo, covered)
+        if handler == "automated_review" and watch_ci and ci_task:
+            log, watched, watched_findings = await _watch_ci(
+                db,
+                [
+                    (
+                        member_forges.get(mounts_by_row.get(row_id), live_forge),
+                        target_repo,
+                        target_repo if role == "submodule" else (orig_repo or target_repo),
+                    )
+                    for row_id, target_repo, role in targets
+                ],
+                branch=branch,
+                work_item_id=work_item_id,
+                node_id=node_id,
+                ci_task=ci_task,
+                ci_checks=ci_checks,
+                multi=multi,
+            )
+            if watched is not None:
+                # Ended here: the bots' part, which walks `targets`, has nothing to read.
+                status, findings, targets = watched, watched_findings, []
         for row_id, target_repo, role in targets:
             if multi and role == "root" and handler in ("mark_ready", "external_approval"):
                 # The root's own merge request waits for its members: it is
@@ -2679,6 +2855,7 @@ async def run_task(
                     bounds=wait or DEFAULT_WAIT,
                     session_id=session_id,
                     round=round,
+                    watch_ci=watch_ci,
                     pipeline=pipeline,
                     reads=reads,
                     declared=declared,
@@ -2885,6 +3062,7 @@ async def _observed(
             next_at=note.next_at if note else None,
             extra=note.extra if note else None,
             started_extra=note.started_extra if note else None,
+            deadline=note.deadline if note else None,
         )
     )
     if outcome == "timed_out" and by_deadline:
