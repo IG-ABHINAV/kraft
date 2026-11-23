@@ -15,6 +15,11 @@ class ForgeEvent(StrEnum):
     MR_CLOSED = "mr_closed"
     MR_REOPENED = "mr_reopened"
     MR_LABELS_SET = "mr_labels_set"
+    #: The hash of a description Kraft is about to send: recorded before the write,
+    #: so a write whose answer was lost still reads as Kraft's own text.
+    MR_DESCRIPTION_WRITTEN = "mr_description_written"
+    #: The forge's description is not one Kraft wrote, so Kraft left it alone.
+    MR_DESCRIPTION_KEPT = "mr_description_kept"
     #: Kraft pushed the item's branch and the head it reached is new: the
     #: moment a review bot's activity starts counting for that head
     #: (`waits.pushed_at`).
@@ -23,6 +28,11 @@ class ForgeEvent(StrEnum):
     EXTERNAL_WAIT_OBSERVED = "external_wait_observed"
     EXTERNAL_WAIT_REBOUNDED = "external_wait_rebounded"
     EXTERNAL_WAIT_ENDED = "external_wait_ended"
+    #: A forge call got no answer because of the network: the item parks and
+    #: tries again (`waits.note_no_answer`). With a `reason`, it gave up.
+    FORGE_NO_ANSWER = "forge_no_answer"
+    #: The forge answered that task again after `FORGE_NO_ANSWER`.
+    FORGE_ANSWERED = "forge_answered"
     CI_INFRA_EXHAUSTED = "ci_infra_exhausted"
     CI_RUN_ABANDONED = "ci_run_abandoned"
     #: A fix-loop repair asked Kraft to re-run the CI jobs that failed outside
@@ -43,6 +53,9 @@ class ForgeEvent(StrEnum):
     AUTOMATED_REVIEW_SETTLED = "automated_review_settled"
     #: Kraft is about to write a reply or the summary comment: recorded before any write.
     REPLY_INTENDED = "reply_intended"
+    #: Recorded just before a write: if no outcome follows, the send reads as unclear and
+    #: is reconciled. Not a failure and not a counted send.
+    REPLY_SEND_STARTED = "reply_send_started"
     #: A send that did not post: it may have landed (`unclear`), hit a rate limit or
     #: cannot succeed now (`deferred`).
     REPLY_SEND_FAILED = "reply_send_failed"
@@ -78,10 +91,14 @@ FORGE_EVENT_TRAITS = total(
         ForgeEvent.MR_CLOSED: _PLAIN,
         ForgeEvent.MR_REOPENED: _PLAIN,
         ForgeEvent.MR_LABELS_SET: _PLAIN,
+        ForgeEvent.MR_DESCRIPTION_WRITTEN: _PLAIN,
+        ForgeEvent.MR_DESCRIPTION_KEPT: _PLAIN,
         ForgeEvent.BRANCH_PUSHED: _PLAIN,
         ForgeEvent.EXTERNAL_WAIT_STARTED: _PLAIN,
         ForgeEvent.EXTERNAL_WAIT_OBSERVED: _PLAIN,
         ForgeEvent.EXTERNAL_WAIT_REBOUNDED: _PLAIN,
+        ForgeEvent.FORGE_NO_ANSWER: _PLAIN,
+        ForgeEvent.FORGE_ANSWERED: _PLAIN,
         ForgeEvent.EXTERNAL_WAIT_ENDED: _PLAIN,
         ForgeEvent.CI_INFRA_EXHAUSTED: _PLAIN,
         ForgeEvent.CI_RUN_ABANDONED: _PLAIN,
@@ -93,6 +110,7 @@ FORGE_EVENT_TRAITS = total(
         ForgeEvent.AUTOMATED_REVIEW_ERRORED: _PLAIN,
         ForgeEvent.AUTOMATED_REVIEW_SETTLED: _PLAIN,
         ForgeEvent.REPLY_INTENDED: _PLAIN,
+        ForgeEvent.REPLY_SEND_STARTED: _PLAIN,
         ForgeEvent.REPLY_SEND_FAILED: _PLAIN,
         ForgeEvent.REPLY_POSTED: _PLAIN,
         ForgeEvent.REPLY_NOT_FOUND: _PLAIN,

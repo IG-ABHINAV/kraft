@@ -696,7 +696,8 @@ async def set_node_overrides(
     chain template sets per node -- without touching either of those -- plus
     the `model`/`effort` its agent tasks launch with and an `extra_prompt`
     appended to each of their instructions (Kraft-a7ers), and the `reviewers`
-    its automated-review wait reads, over the repository's. `clear`
+    its automated-review wait reads (each `{bot: LOGIN, replies, resolve_fixed}` or
+    `{check: NAME}`), over the repository's. `clear`
     sends `{}` for this node, dropping its overrides back to the template;
     naming a field sets it and keeps the node's other fields, as it always
     has (the PATCH route merges a node's fields). 409s once the node has
@@ -738,7 +739,9 @@ async def set_work_item_policy(
     policy: dict | None = None, *, clear: bool = False, work_item_id: str | None = None
 ) -> dict:
     """Set or clear a work item's own policy override (Kraft-ab1bh): item-wide
-    fields (`max_attempts`, `timeout_minutes`, `allowed_harnesses`; the time
+    fields (`max_attempts`, `timeout_minutes`, `allowed_harnesses`, the reply
+    limits `reply_cap_per_thread`, `reply_rounds_per_head` and
+    `reply_timeout_minutes`; the time
     caps `time_cap_minutes` and `total_time_cap_minutes`, and the safety
     fields, which only tighten) plus
     `paths: {canonical path: {field: value}}` for one node, step or task. It

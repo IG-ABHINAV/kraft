@@ -206,21 +206,23 @@ def test_set_repo_is_a_touch_like_patch_repos(client, repo, templates_dir, key):
     assert (written["default_chain"], "default_chain_template" in written) == ("default", False)
 
 
-def test_a_save_keeps_the_yaml_only_automated_review_as_written(
-    client, repo, templates_dir, replies_on
-):
+def test_a_save_keeps_the_yaml_only_automated_review_as_written(client, repo, templates_dir):
     """A pin, not new code: `automated_review` is in Settings' `YAML_ONLY`
     (`fields.ts`) and `set_repo` edits key by key, so a save elsewhere on the
-    entry leaves a bot's `replies` as the YAML wrote it."""
+    entry leaves a bot's `replies` and `resolve_fixed` as the YAML wrote them."""
     connect_repo(repo, templates_dir, managed=False, enabled=False)
     file = templates_dir / "repos.yaml"
     data = yaml.safe_load(file.read_text())
-    data["repos"][0]["automated_review"] = [{"bot": "coderabbitai", "replies": True}]
+    data["repos"][0]["automated_review"] = [
+        {"bot": "coderabbitai", "replies": True, "resolve_fixed": True}
+    ]
     file.write_text(yaml.safe_dump(data))
     path = str(repo.resolve())
     body = resolved(client, {"op": "set_repo", "path": path, "patch": {"name": "x"}})
     (written,) = yaml.safe_load(client.get(URL).json()["files"]["repos.yaml"])["repos"]
-    assert written["automated_review"] == [{"bot": "coderabbitai", "replies": True}]
+    assert written["automated_review"] == [
+        {"bot": "coderabbitai", "replies": True, "resolve_fixed": True}
+    ]
     assert messages(body) == []
 
 

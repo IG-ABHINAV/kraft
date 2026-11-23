@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from kraft.adapters.forge.models import ForgeNote, ReviewerFeedback
-from kraft.adapters.forge.replies import facts
+from kraft.adapters.forge.replies import facts, owed
 from kraft.automated_review import BotReviewer, CheckReviewer, Reviewers
 from kraft.vocab import ForgeEvent
 
@@ -96,6 +96,40 @@ def decide(
     )
 
 
+def collect(
+    feedback: list[ReviewerFeedback], how: str | None, kraft: facts.Kraft | None = None
+) -> list[dict]:
+    """What each reviewer said, as the triage reads it, every reviewer finished `how`
+    (`decide` builds the same when it settles)."""
+    bots = [f.reviewer.bot for f in feedback if f.reviewer.bot is not None]
+    return [_collected(item, how, bots, kraft) for item in feedback]
+
+
+def reply_wait(
+    feedback: list[ReviewerFeedback], wait: owed.ReplyWait, *, now: datetime, kraft: facts.Kraft
+) -> tuple[bool, datetime | None]:
+    """Whether every thread the round waits for is done (answered, resolved, written in by a
+    person, or past its deadline), and the latest deadline among those that are not, clamped
+    to `now + timeout`: a forge clock ahead of Kraft's must not park the wait for the skew."""
+    bots = [f.reviewer.bot for f in feedback if f.reviewer.bot is not None]
+    on = [f.reviewer.bot for f in feedback if f.reviewer.bot is not None and f.reviewer.replies]
+    open_ = {t["id"]: t for f in feedback for t in f.threads}
+    pending: list[datetime] = []
+    for tid in wait.threads:
+        thread = open_.get(tid)  # a resolved thread is not in the collection: done
+        s = (
+            None
+            if thread is None
+            else owed.standing(
+                thread.get("notes", ()), on=on, bots=bots, kraft=kraft, timeout=wait.timeout
+            )
+        )
+        if s is not None and not owed.is_done(s, now=now):
+            pending.append(s.deadline)
+    latest = max(pending, default=None)
+    return not pending, None if latest is None else min(latest, now + wait.timeout)
+
+
 def _talks(thread: dict, kraft: facts.Kraft | None) -> bool:
     return kraft is not None and kraft.talks_in(thread.get("notes", ()))
 
@@ -109,12 +143,17 @@ def _activity(
 ) -> tuple[datetime | None, list[str]]:
     """The bot's latest activity at this check, and its thread ids to remember. A
     thread Kraft has posted in is left out of those ids, so the bot resolving it
-    is not activity."""
-    thread_ids = sorted(t["id"] for t in item.threads if not _talks(t, kraft))
+    is not activity, and neither is a thread the record holds a reply in that has since been
+    resolved or has left the collection: the ids remembered from the last check are compared
+    less the ones excluded now."""
+    excluded = {t["id"] for t in item.threads if _talks(t, kraft)} | (
+        kraft.threads if kraft else set()
+    )
+    thread_ids = sorted(t["id"] for t in item.threads if t["id"] not in excluded)
     seen = [datetime.fromisoformat(prior["activity_at"])] if prior and prior["activity_at"] else []
     if item.last_activity is not None and item.last_activity > since:
         seen.append(item.last_activity)
-    if prior is not None and set(prior["threads"]) != set(thread_ids):
+    if prior is not None and set(prior["threads"]) - excluded != set(thread_ids):
         seen.append(now)
     return max(seen, default=None), thread_ids
 

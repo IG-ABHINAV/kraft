@@ -603,8 +603,9 @@ def build() -> MCPServer:
         with (above the item-wide `set_agent_overrides`), an `extra_prompt`
         appended to each of their instructions (a person's to set: refused
         from an MCP session; `clear` drops it with the rest), and the `reviewers` its
-        automated-review wait reads (each `{"bot": LOGIN}` or `{"check": NAME}`,
-        over the repository's; `[]` expects none) -- without touching the Policy
+        automated-review wait reads (each `{"bot": LOGIN, "replies": bool,
+        "resolve_fixed": bool}` or `{"check": NAME}`, over the repository's; `[]` expects none;
+        `resolve_fixed` needs `replies`) -- without touching the Policy
         screen's system defaults or the chain everyone else uses. A
         model/effort the node's harness refuses is refused here. `runner` is
         where the node's steps run: a machine or a group from workers.yaml,
@@ -634,8 +635,9 @@ def build() -> MCPServer:
     ) -> dict:
         """Set or clear a Kraft work item's own policy override, for that item
         only -- never its chain or any other item. `policy` holds
-        item-wide fields (`max_attempts`, `timeout_minutes`,
-        `allowed_harnesses`, `escalation_harness` -- the harnesses.yaml
+        item-wide fields (`max_attempts`, `timeout_minutes`, the review-bot
+        reply limits `reply_cap_per_thread`, `reply_rounds_per_head`,
+        `reply_timeout_minutes`, `allowed_harnesses`, `escalation_harness` -- the harnesses.yaml
         profile an escalation turn runs on, or "item" for the one the item's
         own work ran on -- the caps `time_cap_minutes`,
         `total_time_cap_minutes` (a wait's total cap is its timeout),

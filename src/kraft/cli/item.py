@@ -17,7 +17,9 @@ from kraft.vocab import DiffSide, ReplyClaim, ReviewOutcome, ThreadLabel, WorkIt
 _POLICY_HELP = (
     "the item's own policy override, FIELD=VALUE item-wide or PATH.FIELD=VALUE for one "
     "node, step or task by canonical path (repeatable), e.g. "
-    "merge_request_feedback.ci.await_ci.total_time_cap_minutes=60 or max_attempts=4"
+    "merge_request_feedback.ci.await_ci.total_time_cap_minutes=60 or max_attempts=4 "
+    "(`reply_cap_per_thread`, `reply_rounds_per_head` and `reply_timeout_minutes` bound "
+    "the replies to review bots)"
 )
 
 
@@ -51,19 +53,18 @@ def _node_overrides(pairs: list[str]) -> dict | None:
     return overrides or None
 
 
-#: What may follow `bot:LOGIN`, each after a `:` (Part 2's third item adds `resolve=kraft`).
-_BOT_OPTIONS = {"replies": ("replies", True)}
+#: What may follow `bot:LOGIN`, each after a `:`. There is no `resolve=` form.
+_BOT_OPTIONS = {"replies": ("replies", True), "resolve_fixed": ("resolve_fixed", True)}
 
 
 def _reviewer(raw: str) -> dict | None:
-    """One `--reviewer`: `bot:LOGIN[:replies]` or `check:NAME`, or `none` (None),
+    """One `--reviewer`: `bot:LOGIN[:replies[:resolve_fixed]]` or `check:NAME`, or `none` (None),
     which alone sends `[]`, no reviewer expected. Options are parsed after a bot's
     login only: a check's name may hold `:`."""
     if raw == "none":
         return None
     kind, sep, name = raw.partition(":")
-    # Not advertised while the server refuses it (item 3 names `:replies` here).
-    usage = f"--reviewer takes bot:LOGIN, check:NAME or none, not {raw!r}"
+    usage = f"--reviewer takes bot:LOGIN[:replies[:resolve_fixed]], check:NAME or none, not {raw!r}"
     if kind not in ("bot", "check") or not (sep and name):
         raise argparse.ArgumentTypeError(usage)
     if kind == "check":
@@ -1018,9 +1019,10 @@ def _add_item(subs, common: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         type=_reviewer,
-        metavar="bot:LOGIN|check:NAME",
+        metavar="bot:LOGIN[:replies[:resolve_fixed]]|check:NAME",
         help="a reviewer this node's automated-review wait reads, over the repo's and the "
-        "task's (repeatable); `none` expects none",
+        "task's (repeatable); `none` expects none (`:replies`: Kraft answers that bot; "
+        "`:resolve_fixed`: and resolves the threads whose fix it confirmed)",
     )
     set_node_override.add_argument(
         "--clear", action="store_true", help="reset this node to the template's own binding"

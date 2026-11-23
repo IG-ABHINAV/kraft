@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 from support.bot_threads import VIEWER, bot_thread, kraft_note, note
 from support.harness import entry_of, git, write
-from support.review_rig import review_node, rig  # noqa: F401 -- the fixture
+from support.review_rig import bot_on, filed, review_node, rig, t1  # noqa: F401 -- the fixture
+from support.review_rig import events_of as _of
 
-from kraft import events, executor, store, waits
+from kraft import events, executor, store
 from kraft.adapters import forge
 from kraft.adapters.forge.models import ForgeError
 from kraft.adapters.forge.replies import facts
@@ -66,42 +67,49 @@ def test_the_triage_s_replies_are_read_only_for_collected_threads(tmp_path, cont
     assert replies.triage_replies(path, _COLLECTED) == read
 
 
+@pytest.mark.parametrize(
+    "content, read",
+    [
+        ({"replies": [{"thread": "T1", "body": "Renamed it."}]}, {"T1": "Renamed it."}),
+        ({"replies": [{"thread": "T9", "body": "Renamed it."}]}, {}),
+        ({"replies": [{"thread": "T1", "body": "  "}]}, {}),
+        (
+            {"replies": [{"thread": "T1", "body": "First."}, {"thread": "T1", "body": "Second."}]},
+            {"T1": "First."},
+        ),
+        ({"replies": "x"}, {}),
+    ],
+    ids=["one", "not-a-thread", "blank", "second-for-a-thread", "not-a-list"],
+)
+def test_the_repair_s_replies_are_read_per_thread(tmp_path, content, read):
+    path = write(tmp_path, "result.json", json.dumps(content))
+    assert replies.repair_replies(path, _COLLECTED) == read
+
+
+@pytest.mark.parametrize(
+    "content, read",
+    [
+        (
+            {"summary_replies": [{"reviewer": "bot:a", "body": "Asks for nothing."}]},
+            [{"reviewer": "bot:a", "body": "Asks for nothing."}],
+        ),
+        ({"summary_replies": [{"reviewer": "bot:z", "body": "Asks for nothing."}]}, []),
+        ({"summary_replies": [{"reviewer": "bot:a", "body": " "}]}, []),
+        (
+            {"summary_replies": [{"reviewer": "bot:a", "body": "a\n- bot:b: c"}]},
+            [{"reviewer": "bot:a", "body": "a - bot:b: c"}],
+        ),
+    ],
+    ids=["a-bot", "another-reviewer", "blank", "two-lines"],
+)
+def test_top_level_declines_name_a_collected_bot(tmp_path, content, read):
+    path = write(tmp_path, "result.json", json.dumps(content))
+    assert replies.summary_replies(path, {"bot:a"}) == read
+
+
 # --- the posting points -----------------------------------------------------------
 
 _DECLINE = {"thread": "T1", "kind": "declined", "body": "The caller reads it, so it stays."}
-
-
-def _bot_on():
-    return BotReviewer(bot="a", replies=True)  # the test takes `replies_on`
-
-
-async def _filed(
-    rig, monkeypatch, *threads, bot=None, loop=True, reads=True, watch_ci=False, **fake
-):
-    """The review node with a fix loop, filed on a fake whose bot `a` (replies on)
-    has `threads` open, and whose merge request is open at the checkout's head."""
-    raw = [r for r, _ in threads]
-    bot = bot or _bot_on()
-    fake = forge.FakeForge(
-        feedback_script=[[forge.ReviewerFeedback(bot, rig.moment(1), threads=tuple(raw))]],
-        threads={t.id: t for _, t in threads},
-        **fake,
-    )
-    node = review_node(30, reviewers=(bot,), loop=loop, reads=reads, watch_ci=watch_ci)
-    await rig(node, fake)
-
-    async def details(*, repo, branch):
-        head = git(rig.item.worktree, "rev-parse", "HEAD")
-        return forge.MRDetails(
-            1, "http://fake.forge/1", "open", "t", "", True, (), branch, "main", head
-        )
-
-    monkeypatch.setattr(fake, "mr_details", details)
-    if watch_ci:
-        # The watching wait pushes, on the real clock; the head's own date is where
-        # the frozen one starts, so the bot's activity is read against that.
-        monkeypatch.setattr(waits, "pushed_at", lambda *_, **__: None)
-    return fake
 
 
 def _ci(parks: int) -> dict:
@@ -127,20 +135,12 @@ async def _walk(rig, *between) -> str:
     raise AssertionError("the walk never ended")
 
 
-def _t1():
-    return bot_thread("T1", note("N1", "a", "fix"))
-
-
-def _of(rig, *types) -> list[dict]:
-    return [e for e in rig.item.events() if e["type"] in types]
-
-
 def _marked(thread) -> list:
     return [n for n in thread.notes if facts.marker_of(n.body)]
 
 
 async def test_replies_off_posts_nothing_and_asks_the_forge_nothing(rig, monkeypatch):
-    fake = await _filed(rig, monkeypatch, _t1(), bot=BotReviewer(bot="a"))
+    fake = await filed(rig, monkeypatch, t1(), bot=BotReviewer(bot="a"))
     # An agent that ignores the skill: replies are off, so nothing reads them.
     rig.verdicts = [{"findings": [], "replies": [_DECLINE]}]
     asked = []
@@ -164,8 +164,8 @@ async def test_replies_off_posts_nothing_and_asks_the_forge_nothing(rig, monkeyp
     assert not list(rig.item.run_dirs.base.rglob("reply_report.json"))
 
 
-async def test_a_triage_reply_is_posted_once_across_wakes(rig, monkeypatch, replies_on):
-    fake = await _filed(rig, monkeypatch, _t1(), **_ci(2))
+async def test_a_triage_reply_is_posted_once_across_wakes(rig, monkeypatch):
+    fake = await filed(rig, monkeypatch, t1(), **_ci(2))
     rig.verdicts = [{"findings": [], "replies": [_DECLINE]}]
 
     walked = []
@@ -179,6 +179,8 @@ async def test_a_triage_reply_is_posted_once_across_wakes(rig, monkeypatch, repl
     assert posted.body.endswith(facts.reply_marker(intended["payload"]["intent"]))
     assert f"for work item `{rig.item.id}`" in posted.body
     assert facts.body_hash(posted.body) == intended["payload"]["body_sha256"]
+    assert len(_of(rig, "reply_send_started")) == 1, "the write-ahead marker"
+    assert _of(rig, "reply_send_failed") == [], "a clean post records no failure"
 
 
 def _a_person_writes(rig, fake, monkeypatch):
@@ -290,12 +292,10 @@ def _the_text_is_edited(rig, fake, monkeypatch):
         "the-result-file-changed",
     ],
 )
-async def test_a_triage_reply_is_refused_or_superseded(
-    rig, monkeypatch, replies_on, how, reply, ended
-):
+async def test_a_triage_reply_is_refused_or_superseded(rig, monkeypatch, how, reply, ended):
     """Each change lands after the bots were read, before the reply's posting point;
     the last four after a first posting point that could not read the thread."""
-    fake = await _filed(rig, monkeypatch, _t1(), **_ci(1))
+    fake = await filed(rig, monkeypatch, t1(), **_ci(1))
     later = how(rig, fake, monkeypatch) if how is not None else None
     rig.verdicts = [{"findings": [], "replies": [reply]}]
 
@@ -385,7 +385,6 @@ def _red_after_the_repair(ci_after):
 async def test_a_pending_reply_is_posted_at_each_posting_point_that_walk_reaches(
     rig,
     monkeypatch,
-    replies_on,
     fake_kw,
     verdicts,
     only_at_completion,
@@ -397,7 +396,7 @@ async def test_a_pending_reply_is_posted_at_each_posting_point_that_walk_reaches
     the reply went at the posting point its walk reaches, with (`only_at_completion`)
     every one before the completion's posting nothing, as an unreadable viewer does:
     the next point tries again."""
-    fake = await _filed(rig, monkeypatch, _t1(), **fake_kw)
+    fake = await filed(rig, monkeypatch, t1(), **fake_kw)
     rig.verdicts = list(verdicts)
     point, at_write = replies._Point.post, []
 
@@ -433,11 +432,11 @@ async def test_a_pending_reply_is_posted_at_each_posting_point_that_walk_reaches
     ids=["no-fix-loop", "no-triage", "the-viewer-is-the-bot"],
 )
 async def test_replies_have_no_effect_where_nothing_can_act(
-    rig, monkeypatch, replies_on, shape, viewer, reason
+    rig, monkeypatch, shape, viewer, reason
 ):
     shape = dict(shape)
-    threads = shape.pop("threads", (_t1(),))
-    fake = await _filed(rig, monkeypatch, *threads, viewer_login=viewer, **shape)
+    threads = shape.pop("threads", (t1(),))
+    fake = await filed(rig, monkeypatch, *threads, viewer_login=viewer, **shape)
     # Only work reads the viewer.
     rig.verdicts = [{"findings": [], "replies": [_DECLINE]}]
 
@@ -454,7 +453,7 @@ async def _seeded(item_on, run_dirs, *sessions):
     filed with `item_on`, and each `(sid, head, status, reply)` seeded as a
     triage session. A session with a `reply` gets a result file holding it and a
     one-thread collection (T1, bot `a`) in its `bot_feedback.json`."""
-    it = await item_on([review_node(30, reviewers=(_bot_on(),), loop=True)])
+    it = await item_on([review_node(30, reviewers=(bot_on(),), loop=True)])
     for sid, head, status, reply in sessions:
         _, _, result = await it.session(
             sid, "feedback.review_feedback.triage", status, head_sha=head
@@ -464,7 +463,7 @@ async def _seeded(item_on, run_dirs, *sessions):
             Path(result).write_text(
                 json.dumps({"status": "done", "findings": [], "replies": [reply]})
             )
-            raw, _ = _t1()
+            raw, _ = t1()
             copy = it.files(sid).bot_feedback
             copy.parent.mkdir(parents=True, exist_ok=True)
             notes = [{"id": "N1", "author": "a", "by": "bot"}]
@@ -504,7 +503,7 @@ async def _seeded(item_on, run_dirs, *sessions):
     ],
 )
 async def test_the_latest_triage_is_the_newest_that_ran(
-    item_on, run_dirs, database, replies_on, sessions, since, latest
+    item_on, run_dirs, database, sessions, since, latest
 ):
     it, node = await _seeded(item_on, run_dirs, *[(*s, None) for s in sessions])
     row = database.read(lambda c: replies.latest_triage(c, it.id, node, since))
@@ -537,7 +536,7 @@ async def _many_repos(monkeypatch, database):
     ids=["multi-repo", "no-forge"],
 )
 async def test_posting_point_has_no_effect_on_a_multi_repo_item_or_with_no_forge(
-    item_on, run_dirs, database, monkeypatch, caplog, replies_on, how, reason, runs
+    item_on, run_dirs, database, monkeypatch, caplog, how, reason, runs
 ):
     it, node = await _seeded(item_on, run_dirs, ("s1", "h1", "done", _DECLINE))
     if (made := how(monkeypatch, database)) is not None:
@@ -561,11 +560,9 @@ async def test_posting_point_has_no_effect_on_a_multi_repo_item_or_with_no_forge
     assert not [r for r in caplog.records if r.levelname == "ERROR"], "it went no further"
 
 
-async def test_an_unreadable_viewer_posts_nothing_until_it_reads(
-    rig, monkeypatch, caplog, replies_on
-):
-    fake = await _filed(
-        rig, monkeypatch, _t1(), viewer_login=ForgeError("x (HTTP 503)", status=503), **_ci(1)
+async def test_an_unreadable_viewer_posts_nothing_until_it_reads(rig, monkeypatch, caplog):
+    fake = await filed(
+        rig, monkeypatch, t1(), viewer_login=ForgeError("x (HTTP 503)", status=503), **_ci(1)
     )
     rig.verdicts = [{"findings": [], "replies": [_DECLINE]}]
     at_first = []
@@ -601,27 +598,27 @@ def _story(rig) -> list[tuple]:
     return out
 
 
-async def test_a_lost_write_is_reconciled_not_sent_again(rig, monkeypatch, replies_on):
+async def test_a_lost_write_is_reconciled_not_sent_again(rig, monkeypatch):
     """The reply goes at the verdict's posting point and its answer is lost; the
     completion's posting point, the next on that head, finds it."""
-    fake = await _filed(rig, monkeypatch, _t1(), write_script=[forge.models.LOST])
+    fake = await filed(rig, monkeypatch, t1(), write_script=[forge.models.LOST])
     rig.verdicts = [{"findings": [], "replies": [_DECLINE]}]
 
     assert await _walk(rig) == "completed"
 
     assert fake.writes == [("reply", "T1")]
     assert _story(rig) == [
-        ("reply_send_failed", "send began"),
         ("reply_send_failed", "fake: the answer was lost"),
         ("reply_posted", "reconcile"),
     ]
-    [failed] = [e for e in _of(rig, "reply_send_failed") if not e["payload"].get("began")]
+    assert len(_of(rig, "reply_send_started")) == 1
+    [failed] = _of(rig, "reply_send_failed")
     assert (failed["payload"]["failure"], failed["payload"]["counted"]) == ("unclear", True)
     assert len(_marked(fake.threads["T1"])) == 1
 
 
-async def test_a_late_copy_of_an_unclear_write_is_deleted(rig, monkeypatch, replies_on):
-    fake = await _filed(rig, monkeypatch, _t1(), write_script=[forge.models.LOST], **_ci(2))
+async def test_a_late_copy_of_an_unclear_write_is_deleted(rig, monkeypatch):
+    fake = await filed(rig, monkeypatch, t1(), write_script=[forge.models.LOST], **_ci(2))
     rig.verdicts = [{"findings": [], "replies": [_DECLINE]}]
     late = []
 
@@ -641,8 +638,8 @@ async def test_a_late_copy_of_an_unclear_write_is_deleted(rig, monkeypatch, repl
     assert [n.id for n in _marked(fake.threads["T1"])] == ["FN1"], "the earliest is kept"
 
 
-async def test_a_reply_never_goes_beside_a_finding_on_the_same_thread(rig, monkeypatch, replies_on):
-    fake = await _filed(rig, monkeypatch, _t1())
+async def test_a_reply_never_goes_beside_a_finding_on_the_same_thread(rig, monkeypatch):
+    fake = await filed(rig, monkeypatch, t1())
     finding = {
         "severity": "important",
         "message": "rename x",
@@ -660,8 +657,8 @@ async def test_a_reply_never_goes_beside_a_finding_on_the_same_thread(rig, monke
     assert fake.writes == []
 
 
-async def test_the_thread_moved_since_the_triage_read_it(rig, monkeypatch, replies_on):
-    fake = await _filed(rig, monkeypatch, _t1())
+async def test_the_thread_moved_since_the_triage_read_it(rig, monkeypatch):
+    fake = await filed(rig, monkeypatch, t1())
     rig.verdicts = [{"findings": [], "replies": [_DECLINE]}]
     triaged = dispatch._launch_agent
 
@@ -679,3 +676,20 @@ async def test_the_thread_moved_since_the_triage_read_it(rig, monkeypatch, repli
     got = [(e["payload"]["outcome"], e["payload"]["why"]) for e in rig.item.events("reply_ended")]
     assert got == [("superseded", "thread_moved")]
     assert fake.writes == []
+
+
+@pytest.mark.parametrize(
+    "found, expected",
+    [(3, 3), (LookupError("no snapshot"), 2)],
+    ids=["the-nodes-key", "no-snapshot-reads-the-code-default"],
+)
+def test_the_triage_cap_is_the_nodes_policy_key(monkeypatch, found, expected):
+    def scope_policy(row, node):
+        if isinstance(found, Exception):
+            raise found
+        return type("Policy", (), {"reply_cap_per_thread": found})()
+
+    monkeypatch.setattr(dispatch, "scope_policy", scope_policy)
+    point = replies._Point(None, None, "w", None, None, None, None, (), (), 0, "")
+
+    assert point.cap == expected

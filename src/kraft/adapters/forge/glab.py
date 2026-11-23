@@ -16,6 +16,7 @@ from kraft.adapters.forge.models import (
     MR,
     CIState,
     CIStatus,
+    DescriptionRevision,
     DropCause,
     FailedJob,
     ForgeError,
@@ -105,7 +106,8 @@ def _bot_feedback(
     talk = [
         d
         for d in discussions
-        if kraft is not None and kraft.talks_in(_glab_notes(d.get("notes") or []))
+        if kraft is not None
+        and (d["id"] in kraft.threads or kraft.talks_in(_glab_notes(d.get("notes") or [])))
     ]
     talk_notes = {str(n.get("id")) for d in talk for n in d.get("notes") or []}
     talk_ids = {d["id"] for d in talk}
@@ -444,6 +446,14 @@ class GlabCli(mr_ops.CliWaits):
 
     async def mr_body(self, *, repo: Path, branch: str) -> str:
         return str((await self._mr(repo, branch)).get("description") or "")
+
+    async def mr_description_history(
+        self, *, repo: Path, branch: str
+    ) -> tuple[DescriptionRevision, ...]:
+        """None to give: GitLab's merge request names only its last editor, which
+        proves nothing about the edits before it, and description versions are
+        not on every tier. So a changed description stays a person's here."""
+        return ()
 
     async def _merge_state(self, repo: Path, branch: str = "") -> str:
         """The merge request's own view of whether it can merge (`_merge_view`)."""
@@ -1192,6 +1202,19 @@ class GlabCli(mr_ops.CliWaits):
             method="POST",
             fields={"auto_merge": "true", "sha": head},
         )
+
+    async def requires_resolved_threads(self, *, repo: Path, base: str) -> bool | None:
+        """GitLab's rule is the project's, whatever the branch."""
+        try:
+            project = await self._api(repo, "projects/:id")
+        except ForgeError:
+            return None
+        value = (
+            project.get("only_allow_merge_if_all_discussions_are_resolved")
+            if isinstance(project, dict)
+            else None
+        )
+        return value if isinstance(value, bool) else None
 
     async def _train_enabled(self, repo: Path) -> bool:
         """Whether the project merges through a merge train: both

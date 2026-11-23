@@ -145,6 +145,22 @@ ROWS: dict[str, Row] = {
     "github-mr_body": Row(
         "mr_body", _call("mr_body", branch=BR), {READ_BRANCH: pr_by_branch(pull_request(body="b"))}
     ),
+    "github-mr_description_history": Row(
+        "mr_description_history",
+        _call("mr_description_history", branch=BR),
+        {
+            "api*graphql*userContentEdits*": gql(
+                {
+                    "node": {
+                        "userContentEdits": {
+                            "nodes": [{"diff": "b", "editor": {"__typename": "Bot"}}]
+                        }
+                    }
+                }
+            ),
+            READ_BRANCH: pr_by_branch(pull_request()),
+        },
+    ),
     "github-ci_status": Row(
         "ci_status",
         lambda f, r: f.ci_status(repo=r, mr=forge.MR(0, ""), branch=BR),
@@ -353,6 +369,15 @@ ROWS: dict[str, Row] = {
                     rest_pull(3, state="closed", merged_at="2026-09-03T00:00:00Z"),
                 ]
             )
+        },
+    ),
+    "github-conversation-rule-classic-unprotected": Row(
+        "requires_resolved_threads",
+        _call("requires_resolved_threads", base="main"),
+        {
+            "api*branches/main/protection*": Api(404, '{"message": "Branch not protected"}'),
+            "api*rules/branches/main*": json.dumps([{"type": "deletion"}]),
+            "api*branches/main *": json.dumps({"protected": True}),
         },
     ),
     "github-labels-two-pages": Row(

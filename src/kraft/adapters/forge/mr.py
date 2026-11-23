@@ -4,8 +4,9 @@ land -- vocabulary both CLI backends share.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from kraft import item_paths
 from kraft.adapters.forge.models import (
     MR,
     ApprovalState,
+    DescriptionRevision,
     ForgeError,
     MRRef,
     ReviewResult,
@@ -171,10 +173,9 @@ def mr_body(
     MR title had to clip it). Signed with a footer naming Kraft and the work
     item, kept whole when the rest is truncated, unless `ATTRIBUTION` is off.
 
-    No commit list and no branch line: the forge already shows both, and every
-    sync rewrote them back over a person's edit. Rebuilt on every call all the
-    same, so an authored body re-read after a repair replaces the old one
-    (Kraft-c09h).
+    No commit list and no branch line: the forge already shows both. Rebuilt on
+    every call, so an authored body re-read after a repair replaces the old one
+    (Kraft-c09h), unless a person edited the description (`run._describe_mr`).
 
     A caller that could not resolve the artifact (missing node, missing file, a
     path that failed containment) hands in an empty `MRMeta` and still gets a
@@ -206,6 +207,29 @@ def mr_body(
         body = head + _TRUNCATION_MARKER
 
     return body + footer
+
+
+def body_hash(body: str) -> str:
+    """A description's identity across a forge round trip: a web editor saves
+    CRLF, and a forge may trim the ends, neither of which is a person's edit."""
+    return hashlib.sha256(body.replace("\r\n", "\n").strip().encode()).hexdigest()
+
+
+def only_bots_since(
+    live: str, revisions: Iterable[DescriptionRevision], ours: Collection[str]
+) -> bool:
+    """Whether every save since Kraft's own text (a hash in `ours`) was a bot's.
+    Newest first, and the newest must be `live`: anything else, an unknown editor
+    or a history that never reaches Kraft's text, may be a person's."""
+    revisions = list(revisions)
+    if not revisions or body_hash(revisions[0].text) != body_hash(live):
+        return False
+    for revision in revisions:
+        if body_hash(revision.text) in ours:
+            return True
+        if not revision.bot:
+            return False
+    return False
 
 
 #: A forge title is a headline; a Kraft work item title is a paragraph (the

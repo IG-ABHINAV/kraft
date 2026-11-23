@@ -53,7 +53,9 @@ class ForgeError(RuntimeError):
     """The forge could not be reached, or answered something unusable.
 
     `status` and `reason` are set when a request was answered; `retry_after`
-    (seconds) and `sso_url` come from the response headers."""
+    (seconds) and `sso_url` come from the response headers. `no_answer` is a
+    call the network cut off: nothing about the work failed, and the same call
+    may succeed later (`dropped_connection`)."""
 
     def __init__(
         self,
@@ -65,6 +67,7 @@ class ForgeError(RuntimeError):
         sso_url: str = "",
         account: str = "",
         source: str = "",
+        no_answer: bool = False,
     ):
         super().__init__(redact.redact(message))
         self.status = status
@@ -73,6 +76,7 @@ class ForgeError(RuntimeError):
         self.sso_url = sso_url
         self.account = account
         self.source = source
+        self.no_answer = no_answer
 
 
 def reason_for(status: int, headers: Mapping[str, str], message: str = "") -> Reason | None:
@@ -152,11 +156,55 @@ _UNREACHABLE_MARKERS = (
     "could not connect",
     "timed out after",
 )
+#: A connection that dropped or never formed, in what git, ssh, gh and glab
+#: print. Not git's "could not read from remote repository": it follows a
+#: dropped connection and a refused key alike, so only the cause beside it counts.
+_DROPPED_MARKERS = (
+    *(m for m in _UNREACHABLE_MARKERS if m != "timed out after"),
+    "closed by remote host",
+    "connection closed by",
+    "broken pipe",
+    "connection reset",
+    "software caused connection abort",
+    "no route to host",
+    "network is down",
+    "host is down",
+    "no such host",
+    "i/o timeout",
+    "tls handshake timeout",
+    "unexpected disconnect while reading sideband",
+)
+#: The other side answered, whatever else the output says.
+_ANSWERED = re.compile(
+    r"\bhttp [1-5]\d\d\b|\[(?:remote )?rejected\]|stale info|non-fast-forward"
+    r"|repository not found|merge conflict",
+)
+#: What a CLI quotes rather than says: a quoted string (an apostrophe inside a word
+#: opens none), or a word holding a slash, a URL or path (`i/o timeout` is the one
+#: marker with a slash). The tools put the cause after these, never inside them.
+_QUOTED = re.compile(r""""[^"\n]*"|(?<!\w)'[^'\n]*'|(?<!\S)(?!i/o\s)\S*/\S*""")
+
+
+def dropped_connection(output: str) -> bool:
+    """Whether a CLI's own output (never its command line, which can hold a title
+    saying "broken pipe") says the network cut the call off. A refused credential or
+    any answer from the forge says otherwise, and unsure is not a drop. A marker
+    inside a quoted name, URL or path is that name's text, not a cause."""
+    low = output.lower()
+    if any(m in low for m in _AUTH_MARKERS) or _ANSWERED.search(low):
+        return False
+    said = _QUOTED.sub(" ", low)
+    return any(m in said for m in _DROPPED_MARKERS)
+
+
 #: Local git operations Kraft runs itself. Their messages carry a file name or
 #: git's own timeout, neither of which says anything about a forge: a file
 #: called "403 forbidden.txt" is not a refused credential, and a rebase that
 #: ran out of time did not fail to reach a host.
 _LOCAL_GIT = ("git rebase ", "git worktree add timed out")
+#: Starts the line naming a merge's open bot threads (`open_threads`). It quotes
+#: file names, so `failure_cause` never reads it.
+OPEN_THREADS_LINE = "Open review-bot threads"
 
 
 #: What each `ForgeError.reason` means for a stop. A reason missing here (a rate
@@ -184,7 +232,7 @@ def failure_cause(
     the text's markers decide."""
     if record and record.get("reason"):
         return _CAUSE_OF_REASON.get(str(record["reason"]))
-    low = text.lower()
+    low = "\n".join(ln for ln in text.splitlines() if not ln.startswith(OPEN_THREADS_LINE)).lower()
     if any(m in low for m in _LOCAL_GIT):
         return None
     if any(m in low for m in _AUTH_MARKERS):
@@ -427,6 +475,15 @@ class MRDetails:
 
 
 @dataclass(frozen=True)
+class DescriptionRevision:
+    """One saved version of a merge request's description, and whether a bot
+    account saved it. An unknown or deleted editor is not a bot."""
+
+    text: str
+    bot: bool
+
+
+@dataclass(frozen=True)
 class Pipeline:
     """One pipeline or workflow run; `status` is the forge's own word."""
 
@@ -489,6 +546,13 @@ class Forge(Protocol):
     async def push(self, *, repo: Path, branch: str) -> None: ...
     async def update_mr(self, *, repo: Path, branch: str, body: str) -> None: ...
     async def mr_body(self, *, repo: Path, branch: str) -> str: ...
+    async def mr_description_history(
+        self, *, repo: Path, branch: str
+    ) -> tuple[DescriptionRevision, ...]:
+        """The description's saved versions, newest first; empty when the forge
+        cannot say who made them."""
+        ...
+
     async def ci_status(
         self, *, repo: Path, mr: MR, branch: str, pipeline_id: str = ""
     ) -> CIStatus: ...
@@ -567,6 +631,11 @@ class Forge(Protocol):
         ...
 
     async def resolve_thread(self, *, repo: Path, thread: ForgeThread) -> None: ...
+    async def requires_resolved_threads(self, *, repo: Path, base: str) -> bool | None:
+        """Whether merging into `base` needs every conversation resolved; None
+        when the forge will not say."""
+        ...
+
     async def mr_comments(self, *, repo: Path, branch: str) -> tuple[ForgeNote, ...]:
         """The merge request's top-level comments, every page, system notes left out."""
         ...
@@ -628,6 +697,10 @@ class FakeForge:
     """
 
     ci_states: list[CIState] = field(default_factory=lambda: ["success"])
+    #: What `requires_resolved_threads` answers; a `ForgeError` is raised.
+    resolved_rule: bool | None | ForgeError = False
+    #: Every base it was asked about, so a test can see no forge call was made.
+    rule_reads: list[str] = field(default_factory=list)
     #: Parallel to `ci_states`: the `sha` each successive `ci_status` call
     #: reports. Consumed the same one-at-a-time way; repeats its last entry.
     #: Defaults to "" — "the backend didn't say" — so a test that never sets
@@ -709,6 +782,10 @@ class FakeForge:
     opened_check_clean: dict[int, bool] = field(default_factory=dict)
     #: The branch each opened merge request targets, by number.
     opened_base: dict[int, str] = field(default_factory=dict)
+    #: What `mr_description_history` answers, newest first, or the error it raises.
+    description_history: tuple[DescriptionRevision, ...] | ForgeError = ()
+    #: How many times that history was read.
+    description_history_reads: int = 0
     #: `automated_review`'s answers, consumed like `ci_states`. A bare state
     #: string is shorthand for a `ReviewResult` with nothing else to say.
     review_results: list[ReviewResult | str] = field(default_factory=lambda: ["clean"])
@@ -849,6 +926,14 @@ class FakeForge:
             return self.bodies[branch]
         return next((b for n, b in self.opened_bodies.items() if self.opened[n] == branch), "")
 
+    async def mr_description_history(
+        self, *, repo: Path, branch: str
+    ) -> tuple[DescriptionRevision, ...]:
+        self.description_history_reads += 1
+        if isinstance(self.description_history, ForgeError):
+            raise self.description_history
+        return self.description_history
+
     async def ci_status(
         self, *, repo: Path, mr: MR, branch: str = "", pipeline_id: str = ""
     ) -> CIStatus:
@@ -957,6 +1042,12 @@ class FakeForge:
 
     async def read_thread(self, *, repo: Path, branch: str, thread_id: str) -> ForgeThread | None:
         return self.threads.get(thread_id)
+
+    async def requires_resolved_threads(self, *, repo: Path, base: str) -> bool | None:
+        self.rule_reads.append(base)
+        if isinstance(self.resolved_rule, ForgeError):
+            raise self.resolved_rule
+        return self.resolved_rule
 
     async def mr_comments(self, *, repo: Path, branch: str) -> tuple[ForgeNote, ...]:
         return tuple(self.comments)

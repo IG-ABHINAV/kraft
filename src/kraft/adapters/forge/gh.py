@@ -17,6 +17,7 @@ from kraft.adapters.forge.models import (
     MR,
     CIState,
     CIStatus,
+    DescriptionRevision,
     DropCause,
     FailedJob,
     ForgeError,
@@ -90,6 +91,17 @@ def _gh_notes(nodes: list[dict]) -> tuple[ForgeNote, ...]:
 
 
 _VIEWER_QUERY = "query { viewer { login } }"
+#: `diff` is the whole description as of that save, despite its name. A history
+#: longer than this page never reaches Kraft's text, so it reads as a person's.
+_DESCRIPTION_HISTORY_QUERY = """
+query($id: ID!) {
+  node(id: $id) {
+    ... on PullRequest {
+      userContentEdits(first: 50) { nodes { diff editor { __typename } } }
+    }
+  }
+}
+"""
 _RESOLVE_MUTATION = """
 mutation($thread: ID!) {
   resolveReviewThread(input: {threadId: $thread}) { thread { isResolved } }
@@ -141,7 +153,11 @@ def _bot_feedback(
     # is a review made only of replies in such threads (each reply on GitHub comes
     # wrapped in one): the bot's own review that opened the thread still counts.
     noted = [(t, _gh_notes((t.get("comments") or {}).get("nodes") or [])) for t in threads]
-    talk = {t["id"] for t, ns in noted if kraft is not None and kraft.talks_in(ns)}
+    talk = {
+        t["id"]
+        for t, ns in noted
+        if kraft is not None and (t["id"] in kraft.threads or kraft.talks_in(ns))
+    }
     replies_ = {n.review_id for t, ns in noted if t["id"] in talk for n in ns if n.reply_to}
     elsewhere = {
         n.review_id for t, ns in noted for n in ns if t["id"] not in talk or not n.reply_to
@@ -612,6 +628,20 @@ class GhCli(mr_ops.CliWaits):
         data = await self._pr(repo, mr_ops.target(0, branch), checks=False)
         return str(data.get("body") or "")
 
+    async def mr_description_history(
+        self, *, repo: Path, branch: str
+    ) -> tuple[DescriptionRevision, ...]:
+        pr = await self._pr(repo, mr_ops.target(0, branch), checks=False)
+        data = await self._gql(repo, _DESCRIPTION_HISTORY_QUERY, {"id": pr["id"]})
+        nodes = ((data.get("node") or {}).get("userContentEdits") or {}).get("nodes") or []
+        return tuple(
+            DescriptionRevision(
+                text=str((n or {}).get("diff") or ""),
+                bot=((n or {}).get("editor") or {}).get("__typename") == "Bot",
+            )
+            for n in nodes
+        )
+
     async def ci_status(
         self, *, repo: Path, mr: MR, branch: str = "", pipeline_id: str = ""
     ) -> CIStatus:
@@ -858,6 +888,42 @@ class GhCli(mr_ops.CliWaits):
         await self._send(
             repo, f"repos/{{owner}}/{{repo}}/{kind}/comments/{note.rest_id}", method="DELETE"
         )
+
+    async def requires_resolved_threads(self, *, repo: Path, base: str) -> bool | None:
+        """A ruleset's `required_review_thread_resolution`, else classic protection's
+        `required_conversation_resolution`. Classic protection needs admin: GitHub
+        answers a non-admin a bare 404, and only "Branch not protected" means none."""
+        name = urlquote(base, safe="")
+        path = f"repos/{{owner}}/{{repo}}/branches/{name}"
+        try:
+            branch = await self._api(repo, path)
+        except ForgeError:
+            return None
+        if isinstance(branch, dict) and branch.get("protected") is False:
+            return False  # covers rulesets too: a ruleset-only branch reads protected
+        try:
+            rules = await self._api(
+                repo, f"repos/{{owner}}/{{repo}}/rules/branches/{name}", fields={"per_page": 100}
+            )
+        except ForgeError:
+            rules = None
+        readable = isinstance(rules, list)
+        if readable and any(
+            r.get("type") == "pull_request"
+            and (r.get("parameters") or {}).get("required_review_thread_resolution")
+            for r in rules
+        ):
+            return True
+        try:
+            classic = await self._api(repo, f"{path}/protection")
+        except ForgeError as exc:
+            none = exc.status == 404 and "Branch not protected" in str(exc)
+            return False if none and readable else None
+        if not isinstance(classic, dict):
+            return None
+        if (classic.get("required_conversation_resolution") or {}).get("enabled"):
+            return True
+        return False if readable else None
 
     async def _threads(self, repo: Path, number: int) -> list[dict]:
         """Every review thread of the pull request, each with every comment: the

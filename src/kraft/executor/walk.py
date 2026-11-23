@@ -18,6 +18,7 @@ from kraft.adapters import subprocess as _subprocess
 from kraft.executor import dispatch, entry, gates, prompts, stops
 from kraft.executor import read_only as _read_only
 from kraft.executor import replies as _replies
+from kraft.executor import reply_round as _reply_round
 from kraft.executor.context import (
     _ADVANCING,
     BASE_MOVED,
@@ -450,7 +451,12 @@ def _task_cause(
         )
     ]
     line = own[-1] if own else next(iter(lines), "")
-    return line if len(line) <= _STOP_CAUSE_MAX else line[: _STOP_CAUSE_MAX - 1] + "…"
+    # Beside the cause, not instead of it: the forge's words stay first.
+    threads = [ln for ln in lines[1:] if ln.startswith(forge_mod.OPEN_THREADS_LINE)]
+    return " ".join(
+        ln if len(ln) <= _STOP_CAUSE_MAX else ln[: _STOP_CAUSE_MAX - 1] + "…"
+        for ln in (line, *threads[-1:])
+    )
 
 
 def _named_for_stop(db, work_item_id: str, node: ResolvedNode, task: ResolvedTask) -> str:
@@ -2178,10 +2184,10 @@ async def _walk_node_once(
             is None
         ):
             # Once per entry into this node, and only ahead of the very first
-            # cycle: `recover_node` re-measures for real, so a repair that
-            # resolved things costs nothing further here, and one that didn't
-            # falls straight through to the normal fix cycle below with the
-            # failure it actually is.
+            # cycle: `recover_node` re-measures for real, and that measurement is
+            # read below like any other, so a repair that resolved things costs
+            # nothing further and one that didn't reaches the normal fix cycle
+            # with the failure it actually is.
             _repair_tried = True
             r_verdict, r_failed, r_excs = await recover_node(
                 db,
@@ -2234,20 +2240,6 @@ async def _walk_node_once(
                     round=_REPAIR_ROUND,
                     loop_severities=loop_severities,
                 )
-            if r_verdict == "ok":
-                if loop.early:
-                    await db.write(lambda c: store.end_measurement(c, work_item_id))
-                await _replies.posting_point(
-                    db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
-                )
-                await node_runs.completed(
-                    db,
-                    Path(worktree) if worktree else None,
-                    work_item_id,
-                    node.id,
-                    run_dirs=run_dirs,
-                )
-                return "ok"
             if r_verdict == REPAIR_DOUBTED:
                 # The repair says the failure needs a code fix, which is this
                 # loop's work (Kraft-yi005). Nothing was re-measured, so
@@ -2257,11 +2249,13 @@ async def _walk_node_once(
                 # repair's concerns before the first cycle is paid for.
                 repair_doubted = dispatch.repair_doubts(db, work_item_id, node, r_failed)
             else:
-                # Only "failed" and ENDED_EARLY reach here, and that fall-through is
-                # deliberate: the repair ran, didn't resolve things, and the ordinary
-                # paid fix cycle below should now see the failure for what it actually
-                # is. An early end of the re-measure goes to the fix loop at round -1,
-                # as a failure does, and never back to `on_failure`.
+                # "ok", "failed" and ENDED_EARLY reach here, and that fall-through is
+                # deliberate: the re-measure is the node's measurement, read as the
+                # top-of-loop one is. A failure goes to the ordinary paid fix cycle
+                # below; an early end goes to the fix loop at round -1 and never back
+                # to `on_failure`; and a pass can still carry findings the loop takes
+                # (the triage step ends `done` and reports them), so it is recorded
+                # and read before the common exit below completes the node.
                 #
                 # The repair's own re-measure just wrote its findings/session rows
                 # under `_REPAIR_ROUND`, not the `round` this loop was on when it
@@ -2342,6 +2336,15 @@ async def _walk_node_once(
         # the stuck detector.
         dropped_findings: dict[str, int] = {}
         has_session: dict[str, bool] = {}
+        # A measurement the node makes after Kraft replied, on the head it was about to
+        # complete on (`reply_round.current`): not `head_sha`, which is `rev-parse HEAD`, since
+        # an in-place item's head is its branch tip.
+        in_reply = (
+            await _reply_round.current(
+                db, work_item_id, node.id, lambda: _reply_round.item_head(row, worktree)
+            )
+            is not None
+        )
         found, reported_hooks = dispatch.collect_findings(
             db,
             work_item_id,
@@ -2350,6 +2353,7 @@ async def _walk_node_once(
             dropped=dropped_findings,
             has_session=has_session,
             run_dirs=run_dirs,
+            reply_round=in_reply,
         )
         # A `same_as` is only believable for a tag this round's reviewer was
         # actually shown. An invented or stale tag would collapse two distinct
@@ -2368,10 +2372,13 @@ async def _walk_node_once(
             found,
             known={f.fingerprint for f in [*(previous_found or []), *previous_unmeasured]},
         )
-        if loop.early:
+        if loop.early or in_reply:
             # What the fix loop declined on this commit is not collected again: not
-            # recorded, not eligible, not in the list to fix, not before the judge.
-            declined = dispatch.declined_fingerprints(db, work_item_id, node.id, head_sha)
+            # recorded, not eligible, not in the list to fix, not before the judge. A reply
+            # round honours every decline on its head, whatever the node's shape.
+            declined = dispatch.declined_fingerprints(
+                db, work_item_id, node.id, head_sha, every=in_reply
+            )
             found = [f for f in found if f.fingerprint not in declined]
         # Parallel to `found`, never a dict keyed on fingerprint: two findings in
         # one round can share a tag if the reviewer pointed both at the same
@@ -2395,7 +2402,7 @@ async def _walk_node_once(
                 sorted(p for p, ran in has_session.items() if not ran),
                 found,
             )
-            if ended_early
+            if ended_early or (in_reply and not all(has_session.values()))
             else []
         )
         # Built here rather than inside the lambda, the same way `judge_payload`
@@ -2422,6 +2429,13 @@ async def _walk_node_once(
                 for f, s in zip(found, as_reported, strict=True)
             ],
             "fingerprints": prints,
+            # Only in a reply round, and an amend keeps the mark of the record it amends: the
+            # judge reads such a record as following no fix. Absent otherwise.
+            **(
+                {"reply_round": True}
+                if in_reply or (amends is not None and latest["payload"].get("reply_round"))
+                else {}
+            ),
             # Only on an early end, and only when it left some: every other record
             # keeps today's shape. Apart from `findings`, so never eligible or fixed.
             **({"unmeasured": unmeasured} if unmeasured else {}),
@@ -2459,9 +2473,21 @@ async def _walk_node_once(
             if ended_early:
                 await _continue()
                 continue
-            await _replies.posting_point(
-                db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
-            )
+            if (
+                started := await _replies.posting_point(
+                    db,
+                    run_dirs,
+                    work_item_id,
+                    node,
+                    row,
+                    worktree,
+                    launch,
+                    completing=True,
+                    loop_key=key,
+                )
+            ) is not None:
+                round, resume_step, repair_doubted, fix_excs = started.round, 0, [], []
+                continue
             await node_runs.completed(
                 db, Path(worktree) if worktree else None, work_item_id, node.id, run_dirs=run_dirs
             )
@@ -2624,9 +2650,21 @@ async def _walk_node_once(
                     # keeps those findings from coming back on this commit.
                     await _continue()
                     continue
-                await _replies.posting_point(
-                    db, run_dirs, work_item_id, node, row, worktree, launch, completing=True
-                )
+                if (
+                    started := await _replies.posting_point(
+                        db,
+                        run_dirs,
+                        work_item_id,
+                        node,
+                        row,
+                        worktree,
+                        launch,
+                        completing=True,
+                        loop_key=key,
+                    )
+                ) is not None:
+                    round, resume_step, repair_doubted, fix_excs = started.round, 0, [], []
+                    continue
                 await node_runs.completed(
                     db,
                     Path(worktree) if worktree else None,
@@ -2715,12 +2753,19 @@ async def _walk_node_once(
                     escalatable=not _red_pipeline_only(failed),
                 )
 
+        head_before = _config.git_read(Path(worktree), "rev-parse", "HEAD")
+        # The prose fingerprint, never a `same_as` tag: `replies` compares the same on
+        # the triage's raw findings (`findings.prose_fingerprint`).
+        threads = {t: _findings.prose_fingerprint(f) for f in eligible for t in f.threads}
         payload = {
             "node_id": node.id,
             "cycle": count,
             # The cap `bump_counter` snapshotted, the one the breach check above used.
             "max_attempts": cap.attempts,
             "failed_tasks": [t.path for t in failed],
+            # Only with replies on (only then does a finding carry threads): which
+            # finding each thread's "Fixed in" is about, and the head it starts from.
+            **({"threads": threads, "head_sha": head_before} if threads else {}),
         }
         await db.write(
             lambda c, payload=payload: events.append(
@@ -2735,8 +2780,12 @@ async def _walk_node_once(
         if eligible:
             repeats = set(previous_prints or [])
             instruction += prompts.FIX_FINDINGS.format(
-                findings=prompts.format_findings(eligible, repeats, from_ci=_ci_sources(node))
+                findings=prompts.format_findings(
+                    eligible, repeats, from_ci=_ci_sources(node), threads=True
+                )
             )
+            if threads:
+                instruction += prompts.FIX_REPLIES
             # The tag is unconditional -- "this finding was in the last
             # measurement" is true either way -- but the note claims an earlier
             # attempt was made, which is false on the crash/resume path where
@@ -2774,7 +2823,6 @@ async def _walk_node_once(
         )
         instruction += prompts.round_history_note(history, dispatch.regressed_fingerprints(history))
         instruction += prompts.previous_attempt_note(previous_fix, run_dirs=run_dirs)
-        head_before = _config.git_read(Path(worktree), "rev-parse", "HEAD")
         # What "the round changed nothing" is judged against (Kraft-6rph9).
         before = _read_only.snapshot(db, row, launch, worktree)
         meta_before = forge_mod.read_mr_meta(Path(worktree), work_item_id, run_dirs)
@@ -3081,6 +3129,8 @@ async def _restart_span(
         ]
         await _reopen_gates(db, work_item_id, nodes, finals, "base_changed")
     await _clear_span_counters(db, work_item_id, span)
+    # No walk observes a wait of this run again, and a later one must not reuse its row.
+    await db.write(lambda c: store.close_parked_sessions(c, work_item_id, node.id))
     # The cursor moves last, after the gates reopened: a crash before it
     # leaves the item on node `index`, where a resume finds its unanswered
     # drop (`hold_interrupted_repair`); one after it resumes at the restart.
@@ -3499,6 +3549,15 @@ async def run_once(
             continue
         base_change = node.node.on_base_changed if isinstance(node.node, ExecNode) else None
         pre_base = dispatch._current_base_ref(db, work_item_id) if base_change else None
+        # A move this node made before a person's stop still counts on this walk.
+        held = None
+        if base_change is not None:
+            start = next(j for j, n in enumerate(nodes) if n.id == base_change.restart_from)
+            rerun = frozenset(n.id for n in nodes[start + 1 : i + 1])
+            held = db.read(
+                lambda c, n=node.id, r=rerun: store.held_base_move(c, work_item_id, n, r)
+            )
+            pre_base = pre_base if held is None else held
         if isinstance(node.node, GroupNode):
             from kraft.executor import slices
 
@@ -3536,17 +3595,52 @@ async def run_once(
             # This call is ending without giving `node` -- or any later node
             # in this same run_once, since none of these statuses continue
             # the loop -- a chance to consume `carried` beyond what it just
-            # got. Report it here, once, rather than duplicating this check
-            # at each of the four returns below (Kraft-s7c04.50).
+            # got. Report it here, once, for all four statuses (Kraft-s7c04.50).
             await _report_if_undelivered(db, work_item_id, carried)
-        if result == "paused":
-            return "paused"
-        if result == "needs_human":
-            return "needs_human"
-        if result == RATE_LIMITED:
-            return RATE_LIMITED
-        if result == WAITING:
-            return WAITING
+            # A base the node moved before it stopped (its CI wait's conflict
+            # rebase, then a wait still pending or a failed push) is the entry
+            # base of the next call, which then sees no move. At Kraft's own
+            # park, stand the item at the restart now. A person's stop stays on
+            # the node they are looking at, where their steer or answer lands:
+            # the move is recorded, and the next walk of this node restarts.
+            # Neither for an item another door has since taken.
+            if (
+                base_change is not None
+                and dispatch._current_base_ref(db, work_item_id) != pre_base
+                and db.read(
+                    lambda c: c.execute(
+                        "SELECT status FROM work_items WHERE id = ?", (work_item_id,)
+                    ).fetchone()["status"]
+                )
+                == result
+            ):
+                if result in (RATE_LIMITED, WAITING):
+                    key = f"{node.id}.on_base_changed"
+                    restarted = await _restart_span(
+                        db,
+                        work_item_id,
+                        nodes,
+                        i,
+                        base_change.restart_from,
+                        policy,
+                        key=key,
+                        cap=_base_change_cap(key),
+                        restart_event=ChainEvent.BASE_CHANGE_RESTART,
+                        reopen_gates=False,
+                        reopen_reason="conflict_resolved",
+                    )
+                    if restarted is None:
+                        return "needs_human"
+                elif held is None:
+                    await db.write(
+                        lambda c, n=node.id, b=pre_base: events.append(
+                            c,
+                            work_item_id,
+                            ChainEvent.BASE_MOVE_HELD,
+                            {"node_id": n, "before": b or ""},
+                        )
+                    )
+            return result
         if result in (MERGE_REWIND, MERGE_REPAIRED, ESCALATION_COMMITTED):
             # Ahead of the base-change branch: Kraft's own forced rebase on the
             # drop moved `base_ref` too, and on a node declaring both policies
