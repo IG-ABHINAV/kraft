@@ -23,6 +23,7 @@ class ReplyRound:
     head: str
     round: int
     threads: tuple[str, ...]  # the threads it was started for
+    deadline: datetime | None = None  # its start plus the reply timeout: bounds the CI look
 
 
 def when(value) -> datetime | None:
@@ -31,6 +32,20 @@ def when(value) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def has_new_bot_note(collected: list, read_at: datetime | None, threads: tuple[str, ...]) -> bool:
+    """Whether a configured bot's note, created after the latest triage read the bots, stands in
+    a thread the round was started for. `read_at` None: no triage has read them."""
+    for r in collected:
+        for t in (r.get("threads") or ()) if isinstance(r, dict) else ():
+            if t.get("id") not in threads:
+                continue
+            for n in t.get("notes") or ():
+                at = when(n.get("created_at"))
+                if n.get("by") == "bot" and at is not None and (read_at is None or at > read_at):
+                    return True
+    return False
 
 
 def item_head(row, worktree) -> str | None:
@@ -53,7 +68,9 @@ async def current(db, work_item_id: str, node_id: str, head_of) -> ReplyRound | 
                 continue
             if e["type"] == ChainEvent.REPLY_ROUND_STARTED:
                 p = e["payload"]
-                found = ReplyRound(e["seq"], p["head"], p["round"], tuple(p["threads"]))
+                found = ReplyRound(
+                    e["seq"], p["head"], p["round"], tuple(p["threads"]), when(p.get("deadline"))
+                )
             elif e["type"] == ChainEvent.FINDINGS_MEASURED:
                 found = None
         return found
@@ -90,6 +107,7 @@ async def begin(db, work_item_id: str, round_: ReplyRound, node_id: str) -> None
                 "head": round_.head,
                 "round": round_.round,
                 "threads": list(round_.threads),
+                "deadline": round_.deadline.isoformat() if round_.deadline else None,
             },
         )
         store.set_current_step(c, work_item_id, 0)

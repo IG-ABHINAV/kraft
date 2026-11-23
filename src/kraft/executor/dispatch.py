@@ -1494,6 +1494,14 @@ def _item_paused(db, work_item_id: str) -> bool:
     return row is not None and row["status"] == WorkItemStatus.PAUSED
 
 
+async def _reply_round_of(db, row, node, worktree):
+    """The reply round `node` is in, or None. The head is asked for only once an open round is
+    found: a repository that never starts one pays a DB read and no `git rev-parse`."""
+    return await _reply_round.current(
+        db, row["id"], node.id, lambda: _reply_round.item_head(row, worktree)
+    )
+
+
 async def dispatch_node(
     db, run_dirs, task: ResolvedTask, node: ResolvedNode, work_item_row, worktree, **kw
 ) -> str:
@@ -1701,7 +1709,15 @@ async def _dispatch_task_in(
     if (
         isinstance(t, AgentTask)
         and AgentInput.BOT_FEEDBACK in t.inputs
-        and prompts.bot_feedback_source(db, run_dirs, work_item_row["id"], node, round) is None
+        and prompts.bot_feedback_source(
+            db,
+            run_dirs,
+            work_item_row["id"],
+            node,
+            round,
+            await _reply_round_of(db, work_item_row, node, worktree),
+        )
+        is None
     ):
         return await skipped_session(
             db,
@@ -1901,17 +1917,16 @@ async def _dispatch_task_in(
         # The review wait of a node in a reply round waits for the answers in the round's
         # threads, each bounded by the review task's own `reply_timeout_minutes`. Only an open
         # round asks (`current` reads the head only then), so a node with none pays a DB read.
+        # The CI look of such a round takes it too: pending past the round's deadline completes
+        # the node on the head's earlier green measurement instead of stopping the item.
         reply = None
-        if t.target is ForgeAction.MR_AUTOMATED_REVIEW:
-            round_ = await _reply_round.current(
-                db,
-                work_item_row["id"],
-                node.id,
-                lambda: _reply_round.item_head(work_item_row, worktree),
-            )
+        if t.target in (ForgeAction.MR_AUTOMATED_REVIEW, ForgeAction.MR_CI):
+            round_ = await _reply_round_of(db, work_item_row, node, worktree)
             if round_ is not None:
                 reply = _owed.ReplyWait(
-                    round_.threads, timedelta(minutes=task_policy.reply_timeout_minutes)
+                    round_.threads,
+                    timedelta(minutes=task_policy.reply_timeout_minutes),
+                    round_.deadline,
                 )
         return await _forge.run_task(
             db,
@@ -2546,7 +2561,13 @@ async def _launch_agent(
     feedback = None
     if AgentInput.BOT_FEEDBACK in t.inputs:
         feedback = prompts.bot_feedback(
-            db, run_dirs, work_item_row["id"], node, common["round"], common["session_id"]
+            db,
+            run_dirs,
+            work_item_row["id"],
+            node,
+            common["round"],
+            common["session_id"],
+            reply=await _reply_round_of(db, work_item_row, node, worktree),
         )
     # Step outputs: this candidate's own session gets its own output folder, and
     # is told about it after whatever instruction it runs (`AGENT_RESUMED_NOTE`
@@ -2940,12 +2961,21 @@ async def measure_node(
     early = own and _starts_early(node)
     ended_early = False
 
+    # In a reply round a decline holds whether or not its measurement ended early.
+    in_reply = (
+        own
+        and await _reply_round.current(
+            db, work_item_id, node.id, lambda: _reply_round.item_head(row, worktree)
+        )
+        is not None
+    )
+
     def _ends_early(step: ResolvedStep) -> bool:
         """Whether `step`, which just advanced, reports a finding the fix loop would
         take that it has not already declined on this commit."""
         found, _ = collect_findings(db, work_item_id, node, round, steps=(step,), run_dirs=run_dirs)
         head = _config.git_read(Path(worktree), "rev-parse", "HEAD") if worktree else None
-        declined = declined_fingerprints(db, work_item_id, node.id, head)
+        declined = declined_fingerprints(db, work_item_id, node.id, head, every=in_reply)
         return any(f.severity in loop_severities and f.fingerprint not in declined for f in found)
 
     for index, step in enumerate(groups):
@@ -3299,6 +3329,15 @@ def _current_rows(
     return current
 
 
+def _skipped_triage(task: ResolvedTask, rows) -> bool:
+    """A triage that started no agent: `skipped_session`'s `done` row with no head."""
+    return (
+        isinstance(task.task, AgentTask)
+        and AgentInput.BOT_FEEDBACK in task.task.inputs
+        and all(r["head_sha"] is None and r["status"] == "done" for r in rows)
+    )
+
+
 def collect_findings(
     db,
     work_item_id: str,
@@ -3309,6 +3348,7 @@ def collect_findings(
     dropped: dict[str, int] | None = None,
     has_session: dict[str, bool] | None = None,
     run_dirs=None,
+    reply_round: bool = False,
 ):
     """(findings, task paths that reported at least one) for one cycle.
 
@@ -3325,7 +3365,10 @@ def collect_findings(
     session at this round}` for every measuring task, so a caller can record
     which tasks this measurement read. A step that fails stops the steps after
     it, and without this a round the later task never ran in reads the same as
-    one where it ran and found nothing.
+    one where it ran and found nothing. In a reply round (`reply_round`) a triage
+    that started no agent because nothing new was said (`skipped_session`'s `done` row
+    with no head) has no session either: it did not measure, and must not read as
+    "triage found nothing".
 
     Only the node's own measuring tasks: the fix task is dispatched with
     `round=count` and the next measuring pass runs at that same round, so an
@@ -3386,7 +3429,13 @@ def collect_findings(
         _reached(db, work_item_id, node) if steps is None else None,
     )
     if has_session is not None:
-        has_session.update({path: path in by_hook for path in tasks})
+        has_session.update(
+            {
+                path: path in by_hook
+                and not (reply_round and _skipped_triage(tasks[path], by_hook[path]))
+                for path in tasks
+            }
+        )
     found: list[_findings.Finding] = []
     reported: set[str] = set()
     for hook, rows_to_read in by_hook.items():
@@ -3573,14 +3622,17 @@ def unmeasured_findings(
 
 
 def declined_fingerprints(
-    db, work_item_id: str, node_id: str, head_sha: str | None
+    db, work_item_id: str, node_id: str, head_sha: str | None, *, every: bool = False
 ) -> frozenset[str]:
     """The tags of findings the node's fix loop declined to act on at `head_sha`.
 
     A `judge_verdict` of the node's current run whose verdict is `stop_downgrade`
     on a measurement that ended early (`ended_early`) holds for the commit it
     names: those findings are not collected, fixed or judged again on it, the
-    re-measure after `on_failure` included. Empty without a head."""
+    re-measure after `on_failure` included. In a reply round (`every`) every
+    `stop_downgrade` verdict on the head counts, ended early or not, on every node
+    shape: the round does not pay the judge or a fix again for what it declined.
+    Empty without a head."""
     if head_sha is None:
         return frozenset()
 
@@ -3595,7 +3647,7 @@ def declined_fingerprints(
             e["type"] == ChainEvent.JUDGE_VERDICT
             and p.get("node_id") == node_id
             and p.get("verdict") == "stop_downgrade"
-            and p.get("ended_early")
+            and (every or p.get("ended_early"))
             and p.get("head_sha") == head_sha
         ):
             tags.update(_findings.from_payload(f).fingerprint for f in p.get("findings", []))
@@ -3745,7 +3797,7 @@ def judge_history(
     #: `evts`, when given, is a timeline the caller already fetched -- the same
     #: shape `escalate._reason` accepts. Read fresh when nothing is handed in,
     #: which is every existing caller including the judge's own.
-    measured: list[tuple[int, list[_findings.Finding], list[_findings.Finding]]] = []
+    measured: list[tuple[int, list[_findings.Finding], list[_findings.Finding], bool]] = []
     for e in evts if evts is not None else db.read(lambda c: events.read_after(c, 0, work_item_id)):
         if e["type"] == ChainEvent.FINDINGS_MEASURED and e["payload"].get("node_id") == node_id:
             cycle = e["payload"]["cycle"]
@@ -3765,6 +3817,8 @@ def judge_history(
                         for f in e["payload"].get("unmeasured", [])
                         if f.get("severity") in loop_severities
                     ],
+                    # A reply round's record (`reply_round`): no fix ran before it.
+                    bool(e["payload"].get("reply_round")),
                 )
             )
     #: `fix_paths` is the node's own fix-loop task paths (`fix_task_paths`).
@@ -3791,9 +3845,11 @@ def judge_history(
             "round": i,
             "findings": found,
             "unmeasured": unread,
-            "fix_result_path": fix_by_round.get(cycle),
+            # No fix ran before a reply round's record: it pairs with none, so no
+            # stall or regression is read across it.
+            "fix_result_path": None if reply else fix_by_round.get(cycle),
         }
-        for i, (cycle, found, unread) in enumerate(measured)
+        for i, (cycle, found, unread, reply) in enumerate(measured)
     ]
 
 
