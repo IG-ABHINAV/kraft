@@ -474,6 +474,142 @@ async def _record_push(
     await db.write(_write)
 
 
+def _record_description(c, work_item_id: str, node_id: str | None, repo: Path, sha: str) -> None:
+    events.append(
+        c,
+        work_item_id,
+        ForgeEvent.MR_DESCRIPTION_WRITTEN,
+        {"node_id": node_id, "repo": str(repo), "sha256": sha},
+    )
+
+
+def _our_descriptions(c, work_item_id: str, repo: Path) -> set[str]:
+    """The hash of every description Kraft recorded writing to `repo`."""
+    rows = c.execute(
+        "SELECT json_extract(payload, '$.sha256') AS sha FROM events "
+        "WHERE work_item_id = ? AND type = ? AND json_extract(payload, '$.repo') = ?",
+        (work_item_id, ForgeEvent.MR_DESCRIPTION_WRITTEN, str(repo)),
+    ).fetchall()
+    return {row["sha"] for row in rows}
+
+
+def _keep_description(c, work_item_id: str, node_id: str | None, repo: Path) -> None:
+    events.append(
+        c,
+        work_item_id,
+        ForgeEvent.MR_DESCRIPTION_KEPT,
+        {"node_id": node_id, "repo": str(repo)},
+    )
+
+
+def _wrote_before_records(
+    c, work_item_id: str, repo: Path, repo_row_id: int | None, number: int
+) -> bool:
+    """Whether a Kraft from before these records wrote this merge request's
+    description: it wrote one on every `mr_opened`, reused merge requests included.
+    This item's own record of this number, per repository where it has several. A
+    `kept` event means this Kraft already judged it not to be its own, and an
+    `mr_opened` from a reuse that could not read the description vouches for nothing."""
+    kept = c.execute(
+        "SELECT 1 FROM events WHERE work_item_id = ? AND type = ? "
+        "AND json_extract(payload, '$.repo') = ? LIMIT 1",
+        (work_item_id, ForgeEvent.MR_DESCRIPTION_KEPT, str(repo)),
+    ).fetchone()
+    if kept is not None or number <= 0:
+        return False
+    if repo_row_id is not None:
+        row = c.execute(
+            "SELECT json_extract(mr_ref, '$.number') AS number, "
+            "json_extract(mr_ref, '$.description_unread') AS unread "
+            "FROM work_item_repos WHERE id = ?",
+            (repo_row_id,),
+        ).fetchone()
+        return row is not None and row["number"] == number and not row["unread"]
+    return (
+        c.execute(
+            "SELECT 1 FROM events WHERE work_item_id = ? AND type = ? "
+            "AND json_extract(payload, '$.number') = ? "
+            "AND json_extract(payload, '$.description_unread') IS NULL LIMIT 1",
+            (work_item_id, ForgeEvent.MR_OPENED, number),
+        ).fetchone()
+        is not None
+    )
+
+
+async def _describe_mr(
+    forge: Forge,
+    db,
+    *,
+    work_item_id: str,
+    node_id: str | None,
+    orig_repo: Path,
+    repo: Path,
+    branch: str,
+    body: str,
+    number: int,
+    repo_row_id: int | None,
+) -> tuple[str | None, str, bool]:
+    """Rewrite an open merge request's description, unless that would destroy
+    what a person wrote there: the live text must be one Kraft recorded writing,
+    reach one through saves made only by bot accounts (`mr_ops.only_bots_since`),
+    or, with no record at all, be on a merge request an earlier Kraft described
+    (`_wrote_before_records`). Anything else, an emptied body included, stays as
+    it is, whole, so nothing can come out half-merged.
+
+    Returns the description this replaced (None when it wrote nothing), a log
+    line, and whether the live description could not be read. A failed read
+    decides nothing, so an outage never marks a description as kept. Hashes go
+    in before the write and every one counts, so a write that landed with its
+    answer lost, or never landed, is not mistaken for an edit."""
+
+    def _earlier(c) -> bool:
+        return _wrote_before_records(c, work_item_id, orig_repo, repo_row_id, number)
+
+    try:
+        live = await forge.mr_body(repo=repo, branch=branch)
+    except ForgeError:
+        return None, "could not read the description to check for edits: left it as it is\n", True
+    new = mr_ops.body_hash(body)
+    current = mr_ops.body_hash(live)
+    ours = db.read(lambda c: _our_descriptions(c, work_item_id, orig_repo))
+    if current not in ours | {new}:
+        if not ours and db.read(_earlier):
+            await db.write(
+                lambda c: _record_description(c, work_item_id, node_id, orig_repo, current)
+            )
+            ours = {current}
+        else:
+            try:
+                revisions = await forge.mr_description_history(repo=repo, branch=branch)
+            except ForgeError:
+                revisions = ()
+            if not mr_ops.only_bots_since(live, revisions, ours):
+                await db.write(lambda c: _keep_description(c, work_item_id, node_id, orig_repo))
+                return (
+                    None,
+                    "the description is not the one Kraft last wrote: left it as it is\n",
+                    False,
+                )
+
+    def _before_write(c) -> None:
+        newest = c.execute(
+            "SELECT type FROM events WHERE work_item_id = ? AND type IN (?, ?) "
+            "AND json_extract(payload, '$.repo') = ? ORDER BY seq DESC LIMIT 1",
+            (
+                work_item_id,
+                ForgeEvent.MR_DESCRIPTION_WRITTEN,
+                ForgeEvent.MR_DESCRIPTION_KEPT,
+                str(orig_repo),
+            ),
+        ).fetchone()
+        if new not in ours or (newest and newest["type"] == ForgeEvent.MR_DESCRIPTION_KEPT):
+            _record_description(c, work_item_id, node_id, orig_repo, new)
+
+    await db.write(_before_write)
+    await forge.update_mr(repo=repo, branch=branch, body=body)
+    return live, "", False
+
+
 async def _rebase_conflict_away(
     db,
     forge: Forge,
@@ -1489,6 +1625,7 @@ async def _run_one(
             # an open_mr that crashed after the create lands here too. A
             # second `mr create` for one branch is an error on both CLIs
             # (Kraft-xron).
+            unread = False
             existing = await forge.find_mr(repo=repo, branch=branch)
             if existing is not None and existing.state == "open":
                 # The same two calls `sync_mr` makes, for the same reason:
@@ -1505,15 +1642,30 @@ async def _run_one(
                     repo=repo,
                     branch=branch,
                 )
-                await forge.update_mr(repo=repo, branch=branch, body=body)
+                _, described, unread = await _describe_mr(
+                    forge,
+                    db,
+                    work_item_id=work_item_id,
+                    node_id=node_id,
+                    orig_repo=orig_repo,
+                    repo=repo,
+                    branch=branch,
+                    body=body,
+                    number=existing.number,
+                    repo_row_id=repo_row_id,
+                )
                 number, url = existing.number, existing.url
-                log, status = f"reusing !{number}: {url}\n", "done"
+                log, status = f"reusing !{number}: {url}\n{described}", "done"
             else:
                 # ponytail: the description predates any commit `mr_checks`'
                 # fix loop adds -- `sync_mr` rebuilds the body from this same
                 # artifact, not from the newer head. Re-run on.mr.describe
                 # from the fix loop if CI-fix commits start changing the
                 # story.
+                sha = mr_ops.body_hash(body)
+                await db.write(
+                    lambda c: _record_description(c, work_item_id, node_id, orig_repo, sha)
+                )
                 mr = await forge.open_mr(
                     repo=repo,
                     branch=branch,
@@ -1543,13 +1695,10 @@ async def _run_one(
             # A multi-repo item's event carries no repo, so each repo's own
             # merge request is recorded on its row too (Kraft-mjsf).
             def _record(c, n=number, u=url):
-                events.append(
-                    c, work_item_id, ForgeEvent.MR_OPENED, {"number": n, "url": u}, node_id=node_id
-                )
+                ref = {"number": n, "url": u, **({"description_unread": True} if unread else {})}
+                events.append(c, work_item_id, ForgeEvent.MR_OPENED, ref, node_id=node_id)
                 if repo_row_id is not None:
-                    store.update_repo_state(
-                        c, repo_row_id, merge_state="open", mr_ref={"number": n, "url": u}
-                    )
+                    store.update_repo_state(c, repo_row_id, merge_state="open", mr_ref=ref)
 
             await db.write(_record)
         case "ci_poll":
@@ -1856,21 +2005,28 @@ async def _run_one(
             )
             # The description `open_mr` wrote predates every commit verify
             # and mr_checks added, so it is rewritten from the branch head
-            # before a human is asked to read it (Kraft-c09h).
-            try:
-                live_body: str | None = await forge.mr_body(repo=repo, branch=branch)
-            except ForgeError:
-                live_body = None  # shortcut: best-effort read, the sync itself goes on
-            await forge.update_mr(repo=repo, branch=branch, body=body)
-            log, status = "pushed and synced the merge request description\n", "done"
+            # before a human is asked to read it (Kraft-c09h), unless a person
+            # edited it.
+            replaced, described, _ = await _describe_mr(
+                forge,
+                db,
+                work_item_id=work_item_id,
+                node_id=node_id,
+                orig_repo=orig_repo,
+                repo=repo,
+                branch=branch,
+                body=body,
+                number=existing.number if existing is not None else 0,
+                repo_row_id=repo_row_id,
+            )
+            log = f"pushed and synced the merge request description\n{described}"
+            status = "done"
             # Editing a description triggers no workflow, so a check that read
             # the old one (a required section, say) stays red until its jobs
-            # run again. Only when the body changed AND the current head's
-            # checks are red: a sync after new commits sees a pending pipeline.
-            # shortcut: re-runs whenever the live description differs, including
-            # edits by a bot or a person, not only a repair; key it on the body
-            # Kraft last wrote if that costs CI.
-            if live_body is not None and live_body.strip() != body.strip():
+            # run again. Only when Kraft changed the body AND the current
+            # head's checks are red: a sync after new commits sees a pending
+            # pipeline.
+            if replaced is not None and replaced.strip() != body.strip():
                 try:
                     head_ci = await forge.ci_status(
                         repo=repo, mr=MR(number=0, url=""), branch=branch
@@ -2938,6 +3094,7 @@ async def run_task(
                     db,
                     rows,
                     root_repo=target_repo,
+                    orig_repo=orig_repo or target_repo,
                     branch=branch,
                     base=item_base,
                     title=title,
@@ -3348,6 +3505,7 @@ async def _ready_root(
     rows,
     *,
     root_repo: Path,
+    orig_repo: Path,
     branch: str,
     base: str,
     title: str,
@@ -3381,7 +3539,15 @@ async def _ready_root(
     try:
         if root["merge_state"] == "pending" and not has_source:
             log, opened = await _bump_pointer_only_root(
-                forge, db, rows, branch=branch, base=base, title=title, work_item_id=work_item_id
+                forge,
+                db,
+                rows,
+                branch=branch,
+                base=base,
+                title=title,
+                work_item_id=work_item_id,
+                node_id=node_id,
+                orig_repo=orig_repo,
             )
             if not opened:
                 return log, "done"
@@ -3401,7 +3567,16 @@ async def _ready_root(
 
 
 async def _bump_pointer_only_root(
-    forge: Forge, db, rows, *, branch: str, base: str, title: str, work_item_id: str
+    forge: Forge,
+    db,
+    rows,
+    *,
+    branch: str,
+    base: str,
+    title: str,
+    work_item_id: str,
+    node_id: str,
+    orig_repo: Path,
 ) -> tuple[str, bool]:
     """A requested bump of a root with no source changes: straight onto the
     item's base branch in the root (`base`) when it takes the push
@@ -3438,18 +3613,21 @@ async def _bump_pointer_only_root(
             raise auth.stamp(exc) from None  # a refused token is not sent a second time
         refused = str(exc).strip().splitlines()[-1] if str(exc).strip() else "refused"
     await forge.push(repo=root_repo, branch=branch)
+    body = mr_ops.mr_body(
+        work_item_id,
+        mr_ops.MRMeta(
+            description=f"Moves {', '.join(bumped)} to the revisions merged for "
+            f"work item {work_item_id}."
+        ),
+    )
+    sha = mr_ops.body_hash(body)
+    await db.write(lambda c: _record_description(c, work_item_id, node_id, orig_repo, sha))
     mr = await forge.open_mr(
         repo=root_repo,
         branch=branch,
         base=base,
         title=f"chore: bump submodule pointers for {title}",
-        body=mr_ops.mr_body(
-            work_item_id,
-            mr_ops.MRMeta(
-                description=f"Moves {', '.join(bumped)} to the revisions merged for "
-                f"work item {work_item_id}."
-            ),
-        ),
+        body=body,
     )
     await db.write(
         lambda c: store.update_repo_state(
